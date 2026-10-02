@@ -1,0 +1,108 @@
+# ==============================================================================
+# Sentinel Project Root .gitignore
+# ==============================================================================
+
+# 1. 外部 SDK / 固件包 / 离线压缩包 (ST SDK & Large Archives)
+# ------------------------------------------------------------------------------
+STM32Cube_FW_F4_*/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# 2. 编译与构建产物 (Build Artifacts & Binaries)
+# ------------------------------------------------------------------------------
+**/build/
+**/out/
+**/.cache/
+*.o
+*.obj
+*.o.d
+*.obj.d
+*.d
+*.elf
+*.hex
+*.bin
+*.axf
+*.map
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+ninja.log
+.ninja_*
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CompileCommands.json
+
+# 3. Python 虚拟环境与打包产物 (Python venvs, bytecode, packaging)
+# ------------------------------------------------------------------------------
+**/.venv/
+**/venv/
+**/env/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+**/_internal/
+HANDOFF-*/app/
+
+# 4. 临时文件与离线抓包/标定原始大文件 (Temp logs, dumps & raw datasets)
+# ------------------------------------------------------------------------------
+**/.tmp/
+**/tmp/
+*.log
+*.sraw
+*.sraw.summary.json
+*.wire.jsonl
+**/records/
+Plan.local.md
+
+# 5. 本地参考资料与旧工程镜像 (References & Manuals)
+# 遵循 Hushi_EC_2026_Refactor 约定：手册与旧工程不入库
+**/references/
+**/docs/boards/sentinel_f407/references/
+
+# 6. 编辑器与 IDE 配置 (IDEs & Editors)
+# ------------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+.clion/
+*.swp
+*.swo
+*~
+.DS_Store
+.obsidian/
+
+# 7. 嵌入式开发工具与工程私有产物 (Embedded IDEs: Keil, IAR, CubeMX)
+# ------------------------------------------------------------------------------
+# Keil MDK
+*.uvopt
+*.uvoptx
+*.uvguix.*
+*.bak
+*.dep
+JLinkLog.txt
+
+# IAR EWARM
+*.ewd
+settings/
+
+# STM32CubeMX 本机生成配置与独立构建入口（避免覆盖根工程）
+**/.mxproject
+**/boards/sentinel_f407/cubemx/sentinel_s1/CMakeLists.txt
+**/boards/sentinel_f407/cubemx/sentinel_s1/CMakePresets.json
+**/boards/sentinel_f407/cubemx/sentinel_s1/cmake/
