@@ -1,0 +1,13 @@
+{
+  "profile": "shooter",
+  "label": "app-shooter-20260926-213857",
+  "sha256": "f727eb69d70cd5172dd37aa8a2974877fc17f74d9189326938ec5b8bef18b45a",
+  "bytes": 198696,
+  "flash_base": 134217728,
+  "sectors": [
+    0,
+    5
+  ],
+  "erase_end": 134479871,
+  "source_elf": "E:\\RoboMaster\\EC\\Hushi_EC_2026_Refactor\\build\\app-shooter-arm-Release\\boards\\sentinel_f407\\sentinel_app.elf"
+}

@@ -1,0 +1,13 @@
+{
+  "profile": "gimbal",
+  "label": "app-gimbal-20260926-213850",
+  "sha256": "5ae74c915d08c9a255e5feb652c00cbd9e42154393e75521eeab954dc411d2bd",
+  "bytes": 199744,
+  "flash_base": 134217728,
+  "sectors": [
+    0,
+    5
+  ],
+  "erase_end": 134479871,
+  "source_elf": "E:\\RoboMaster\\EC\\Hushi_EC_2026_Refactor\\build\\app-gimbal-arm-Release\\boards\\sentinel_f407\\sentinel_app.elf"
+}

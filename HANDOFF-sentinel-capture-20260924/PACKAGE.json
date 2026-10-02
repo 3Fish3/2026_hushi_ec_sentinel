@@ -1,0 +1,15 @@
+{
+  "role": "capture-dm-read-only",
+  "build_id": "capture-cap-stream-1m-v1",
+  "uart_baud": 1000000,
+  "platform": "Windows x64",
+  "source_base_commit": "7fc59050f8551ce7ef6f1368d108165599bc4c9a",
+  "source_worktree_dirty": true,
+  "bench_scope": "C-board BMI088 + one GM6020 CAN1 ID4 + existing USB serial; not full vehicle",
+  "rotation_rate_limits_hz": {
+    "gyro": 250,
+    "accel": 100,
+    "each_gimbal_motor": 250
+  },
+  "firmware_sha256": "94780273e4c6fe8b6a1af33728d98e023666a97ed9efa3d0cd51c6bd09ad0c12"
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "sentinel-observed-calibration/1",
+  "dataset": "references/records/09251300",
+  "mapping_log": "mapping-1790312636290200865.jsonl",
+  "sources": {"main": {"bus": 1, "can_id": 520}, "fire": {"bus": 1, "can_id": 522}, "pitch": {"bus": 1, "can_id": 0}},
+  "stationary_train": {"file": "stationary-1790312428951323412.sraw", "interval_s": [2, 58]},
+  "stationary_holdout": [{"file": "stationary-1790312524461793334.sraw", "interval_s": [3, 19]}, {"file": "stationary-1790312550813838978.sraw", "interval_s": [2, 18]}],
+  "train": [
+    {"file": "main-1790312043210519125.sraw", "interval_s": [2, 58], "dominant_axis": "main"},
+    {"file": "fire-1790312223480932174.sraw", "interval_s": [2, 28], "dominant_axis": "fire"},
+    {"file": "pitch-1790312306147629799.sraw", "interval_s": [2, 28], "dominant_axis": "pitch"}
+  ],
+  "holdout": [
+    {"file": "main-1790312182208043026.sraw", "interval_s": [2, 28], "dominant_axis": "main"},
+    {"file": "fire-1790312261679493993.sraw", "interval_s": [2, 28], "dominant_axis": "fire"},
+    {"file": "pitch-1790312347380424455.sraw", "interval_s": [2, 28], "dominant_axis": "pitch"}
+  ],
+  "stress": [{"file": "main-1790312110658379176.sraw", "interval_s": [0.25, 25], "dominant_axis": "mixed"}],
+  "reference": {"file": "main-1790312043210519125.sraw", "at_s": 2.0, "meaning": "V=S at this measured fire/pitch encoder pose; not a mechanical zero"},
+  "analysis": {"derivative_half_window": 4, "lag_bound_s": 0.02, "lag_profile_step_s": 0.001},
+  "unconfirmed": ["vehicle forward direction", "mechanical zeros and limits", "absolute multi-turn branch outside recorded windows"],
+  "hypotheses": ["base held stationary as requested during collection, not independently measured", "fixed IMU mounting across recordings, per operator report", "native output angles used directly in serial rotation model; fitted rate-scale checks are evidence, not independent transmission measurement"],
+  "deployment_ready": false
+}
