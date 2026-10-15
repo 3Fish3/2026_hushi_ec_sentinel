@@ -83,6 +83,40 @@ void raw_contracts() {
     CHECK(tx.frames.size() == 50);
     for (const auto& frame : tx.frames) { CHECK(cap::allowed_read(frame) && frame.data[2] == 0xcc); }
 }
+void raw_control_domain_contracts() {
+    namespace raw = ec::sentinel::recording;
+    struct Expected { std::uint8_t domain, stream, bus; std::uint16_t id; };
+    // 域编号与 CAN 流编号不是同一顺序; 独立列出真实反馈地址作为断言依据.
+    constexpr std::array<Expected, 9> expected{{
+        {0, 0, 2, 0x201}, {1, 1, 2, 0x202}, {2, 2, 2, 0x203}, {3, 3, 2, 0x204},
+        {4, 4, 1, 0x20a}, {5, 5, 1, 0x208},
+        {7, 6, 2, 0x205}, {8, 7, 2, 0x206}, {9, 8, 2, 0x207}
+    }};
+    for (const auto& selected : expected) {
+        raw::Recorder recorder;
+        std::array<std::uint8_t, 12> request{1, 1, 3, selected.domain};
+        raw::put32(request, 4, 100 + selected.domain); raw::put32(request, 8, 100000);
+        std::array<std::uint8_t, 240> reply{};
+        CHECK(recorder.request(request, reply, {1000}) == 32 && reply[2] == 0);
+        // 同时注入所有设备以及错误总线, 必须只保留所选域的真实反馈.
+        for (const auto& source : expected) {
+            const ec::transport::CanFrame frame{source.id, 8, {1, 2, 3, 4, 5, 6, 7, 8}};
+            recorder.can(source.bus == 1 ? 2 : 1, frame, {2000}, {2000}, 0);
+            recorder.can(source.bus, frame, {3000}, {3000}, 0);
+        }
+        CHECK(recorder.size() == 1);
+        request[1] = 2;
+        CHECK(recorder.request(request, reply, {4000}) == 32 && reply[3] == 2);
+        request[1] = 3; raw::put32(request, 8, 0);
+        CHECK(recorder.request(request, reply, {4000}) == 96 && reply[9] == 1);
+        const auto record = raw::decode(std::span<const std::uint8_t>{reply}.subspan(32, 64));
+        CHECK(record && record->kind == raw::Kind::can && record->stream == selected.stream);
+        CHECK((record->data[0] & 255u) == selected.bus);
+        CHECK(((record->data[0] >> 8) & 255u) == 8);
+        CHECK((record->data[0] >> 16) == selected.id);
+        CHECK(record->data[1] == 0x04030201u && record->data[2] == 0x08070605u);
+    }
+}
 void raw_golden() {
     namespace raw = ec::sentinel::recording;
     raw::Record record{raw::Kind::gyro, 0, 3, 0, 4, 0xfffffff0u, 20, 1, 600, 9};
@@ -118,6 +152,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--raw-golden") == 0) { raw_golden(); return 0; }
     if (argc == 3 && std::strcmp(argv[1], "--raw-replay") == 0) { return raw_replay(argv[2]); }
     raw_contracts();
+    raw_control_domain_contracts();
     if (argc == 2 && std::strcmp(argv[1], "--golden") == 0) { golden(); return 0; }
     for (unsigned rid = 0; rid < 256; ++rid) {
         const auto f = cap::read_request(static_cast<std::uint8_t>(rid));
