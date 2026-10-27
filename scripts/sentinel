@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Project-local Linux launcher; never fall back to a global Python interpreter.
+set -euo pipefail
+ROOT="$(dirname -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")")"
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+    printf '错误：找不到项目解释器 %s\n请先按 docs/getting-started/Linux-Python环境.md 配置环境。\n' "$PYTHON" >&2
+    exit 2
+fi
+# Ignore inherited PYTHONHOME/PYTHONPATH while loading the launcher itself.
+exec "$PYTHON" -E "$ROOT/scripts/sentinel_cli.py" "$@"
