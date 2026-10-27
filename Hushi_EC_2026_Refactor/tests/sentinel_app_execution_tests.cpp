@@ -28,7 +28,6 @@ using ec::sentinel::app::ConfigAudience;
 using ec::sentinel::app::Domain;
 using ec::sentinel::app::DomainSetpoint;
 using ec::sentinel::app::Epochs;
-using ec::sentinel::app::ExecutorStats;
 using ec::sentinel::app::FaultInputs;
 using ec::sentinel::app::Reason;
 using ec::sentinel::app::SentinelApp;
@@ -187,6 +186,7 @@ void chassis_contracts() {
     rig.go_local(10);
     CHECK(rig.exec.assembled());
     CHECK(rig.exec.dji_device(*rig.app.dji_slot_for(Domain::chassis_lf)) != nullptr);
+    rig.bus1.clear();
     rig.bus2.clear();
 
     // 小 twist: 不缩放, 目标落在线性区, 可直接核对单位换算链.
@@ -194,8 +194,9 @@ void chassis_contracts() {
     rig.at(11);
     rig.step();
     CHECK(rig.app.twist_scale() == 1.0f);
-    const auto* wheel_frame = rig.bus2.last(0x200);
+    const auto* wheel_frame = rig.bus1.last(0x200);
     CHECK(wheel_frame != nullptr);
+    CHECK(rig.bus2.last(0x200) == nullptr);
     CHECK(wheel_frame->size == 8);
     const auto lf = slot_raw(*wheel_frame, 0);
     const auto rf = slot_raw(*wheel_frame, 1);
@@ -214,7 +215,7 @@ void chassis_contracts() {
     CHECK(rig.app.twist_scale() < 1.0f);
     CHECK(rig.app.requested_twist()->vx_mps == 5.0f);
     CHECK(std::fabs(rig.app.adopted_twist()->vx_mps - 5.0f * rig.app.twist_scale()) < 1e-4f);
-    const auto* scaled = rig.bus2.last(0x200);
+    const auto* scaled = rig.bus1.last(0x200);
     CHECK(scaled != nullptr);
     CHECK(std::abs(slot_raw(*scaled, 0)) == std::abs(slot_raw(*scaled, 1)));
 
@@ -225,9 +226,10 @@ void chassis_contracts() {
              Domain::chassis_rb}) {
         rig.feed(domain, 0.0f, 100.0f); // 轴侧 +5.26 rad/s
     }
+    rig.bus1.clear();
     rig.bus2.clear();
     rig.step();
-    const auto* correcting = rig.bus2.last(0x200);
+    const auto* correcting = rig.bus1.last(0x200);
     CHECK(correcting != nullptr);
     CHECK(slot_raw(*correcting, 0) < 0);
 
@@ -236,7 +238,7 @@ void chassis_contracts() {
     CHECK(rig.app.accept_targets(empty, Tick{14}) == AcceptResult::accepted);
     rig.at(14);
     rig.step();
-    const auto* withdrawn = rig.bus2.last(0x200);
+    const auto* withdrawn = rig.bus1.last(0x200);
     CHECK(withdrawn != nullptr);
     for (std::size_t s = 0; s < 4; ++s) { CHECK(slot_raw(*withdrawn, s) == 0); }
 }
@@ -409,21 +411,21 @@ void branch_contracts() {
 // DM pitch: encode/decode、enable/disable 请求与反馈生命周期.
 void pitch_contracts() {
     Rig rig;
-    rig.bus1.clear();
+    rig.bus2.clear();
     rig.go_local(10);
     // 启动后没有任何目标: 撤输出 = disable 请求. 从未本地 enable 也要发 —— 设备与 MCU 可以
     // 独立重启, 接入时设备可能已经 Enabled, 把"我曾使能过"当作前提会漏掉停止请求.
     CHECK(rig.exec.stats().dm_disable_sent == 1);
     CHECK(rig.exec.pitch_disable_requested());
     const CanFrame* disable_frame0 = nullptr;
-    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
-        if (rig.bus1.frames[i].id == 0x01) { disable_frame0 = &rig.bus1.frames[i]; }
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        if (rig.bus2.frames[i].id == 0x01) { disable_frame0 = &rig.bus2.frames[i]; }
     }
     CHECK(disable_frame0 != nullptr);
     CHECK(disable_frame0->data[7] == 0xfd);
 
     // 接受目标但从未收到反馈: 必需反馈缺失 (A09) → 保持撤输出, 不重复发 disable.
-    rig.bus1.clear();
+    rig.bus2.clear();
     TargetSnapshot packet{};
     packet.domains[index(Domain::pitch)] = DomainSetpoint{ControlMode::position, -0.25f};
     CHECK(rig.app.accept_targets(packet, Tick{11}) == AcceptResult::accepted);
@@ -431,7 +433,7 @@ void pitch_contracts() {
     rig.step();
     CHECK(rig.exec.stats().dm_enable_sent == 0);
     CHECK(rig.exec.stats().dm_command_sent == 0);
-    CHECK(rig.bus1.last(0x01) == nullptr);
+    CHECK(rig.bus2.last(0x01) == nullptr);
     // 必需反馈缺失会撤输出并作废旧意图: 反馈回来之后必须重新下发目标 (不追旧目标).
     CHECK(!rig.app.target(Domain::pitch).has_value());
 
@@ -439,15 +441,15 @@ void pitch_contracts() {
     rig.at(12);
     rig.feed_dm(0x0, -0.25f);
     CHECK(rig.app.accept_targets(packet, Tick{12}) == AcceptResult::accepted);
-    rig.bus1.clear();
+    rig.bus2.clear();
     rig.step();
     CHECK(rig.exec.stats().dm_enable_sent == 1);
     CHECK(rig.exec.pitch_enable_requested());
     CHECK(!rig.exec.pitch_enable_confirmed());
     CHECK(rig.exec.stats().dm_command_sent == 0); // 未确认使能前不发 MIT
     const CanFrame* enable_frame = nullptr;
-    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
-        if (rig.bus1.frames[i].id == 0x01) { enable_frame = &rig.bus1.frames[i]; }
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        if (rig.bus2.frames[i].id == 0x01) { enable_frame = &rig.bus2.frames[i]; }
     }
     CHECK(enable_frame != nullptr);
     CHECK(enable_frame->data[7] == 0xfc);
@@ -455,11 +457,12 @@ void pitch_contracts() {
     // 反馈确认 Enabled 后才下发 MIT; 位置按零位偏移映射到设备坐标.
     rig.at(13);
     rig.feed_dm(0x1, -0.25f);
-    rig.bus1.clear();
+    rig.bus2.clear();
     rig.step();
     CHECK(rig.exec.pitch_enable_confirmed());
-    const auto* mit = rig.bus1.last(0x01);
+    const auto* mit = rig.bus2.last(0x01);
     CHECK(mit != nullptr);
+    CHECK(rig.bus1.last(0x01) == nullptr); // pitch 在 CAN2, MIT 不得出现在 CAN1
     // MIT 命令帧按命令字段核对, 不当作反馈解析.
     const auto position_raw = static_cast<std::uint16_t>(
         (static_cast<unsigned>(mit->data[0]) << 8) | mit->data[1]);
@@ -474,14 +477,14 @@ void pitch_contracts() {
     TargetSnapshot empty{};
     CHECK(rig.app.accept_targets(empty, Tick{14}) == AcceptResult::accepted);
     rig.at(14);
-    rig.bus1.clear();
+    rig.bus2.clear();
     rig.step();
     CHECK(rig.exec.stats().dm_disable_sent == 2);
     CHECK(rig.exec.pitch_disable_requested());
     CHECK(!rig.exec.pitch_enable_requested());
     const CanFrame* disable_frame = nullptr;
-    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
-        if (rig.bus1.frames[i].id == 0x01) { disable_frame = &rig.bus1.frames[i]; }
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        if (rig.bus2.frames[i].id == 0x01) { disable_frame = &rig.bus2.frames[i]; }
     }
     CHECK(disable_frame != nullptr);
     CHECK(disable_frame->data[7] == 0xfd);
@@ -489,9 +492,9 @@ void pitch_contracts() {
     CHECK(rig.exec.dm_device()->enabled(rig.now));
     CHECK(rig.exec.dm_device()->request_result(rig.now) != ec::drivers::DmRequestResult::accepted);
     rig.at(15);
-    rig.bus1.clear();
+    rig.bus2.clear();
     rig.step();
-    CHECK(rig.bus1.last(0x01) == nullptr); // 不重复发 disable, 也不在停止态发 MIT
+    CHECK(rig.bus2.last(0x01) == nullptr); // 不重复发 disable, 也不在停止态发 MIT
     // 反馈确认 Disabled 后请求结果不再报 pending.
     rig.at(16);
     rig.feed_dm(0x0, -0.25f);
@@ -543,7 +546,7 @@ void pitch_stop_lifecycle_contracts() {
         rig.feed_dm(0x1, 0.0f);
         rig.go_local(10);
         CHECK(rig.exec.stats().dm_disable_sent == 1);
-        rig.bus1.next = SendResult::busy;
+        rig.bus2.next = SendResult::busy;
         for (int i = 0; i < 5; ++i) {
             rig.at(200u + static_cast<std::uint32_t>(i) * 101u);
             rig.feed_dm(0x1, 0.0f);
@@ -552,7 +555,7 @@ void pitch_stop_lifecycle_contracts() {
         CHECK(rig.exec.stats().dm_tx_error >= 5);
         CHECK(rig.exec.stats().dm_disable_sent == 1); // 失败不计作已发送
         // 总线恢复: 退避后的下一次尝试必须真的发帧.
-        rig.bus1.next = SendResult::accepted;
+        rig.bus2.next = SendResult::accepted;
         rig.at(800);
         rig.feed_dm(0x1, 0.0f);
         rig.step();
@@ -713,31 +716,49 @@ void multirate_contracts() {
     for (unsigned i = 0; i < 10; ++i) {
         rig.at(100 + i);
         rig.feed_all();
-        const auto before = rig.bus2.count;
+        const auto before1 = rig.bus1.count;
+        const auto before2 = rig.bus2.count;
         rig.go_local(100 + i);
-        CHECK(rig.bus2.count == before + 1);
-        CHECK(rig.bus2.frames[before].id == (i % 2 == 0 ? 0x200 : 0x1ff));
+        if (i % 2 == 0) {
+            // 偶数毫秒: CAN1 发底盘 (0x200) + 主 yaw 的 GM 首组 (0x1fe);
+            // CAN2 发射 yaw 的 GM 次组 (0x2fe) 与 pitch 查询 (0x7ff).
+            CHECK(rig.bus1.count == before1 + 2);
+            CHECK(rig.bus1.last(0x200) != nullptr);
+            CHECK(rig.bus1.last(0x1fe) != nullptr);
+            CHECK(rig.bus2.count == before2 + 2);
+            CHECK(rig.bus2.last(0x2fe) != nullptr);
+            CHECK(rig.bus2.last(0x7ff) != nullptr);
+        } else {
+            // 奇数毫秒: CAN1 只发主 yaw 的 GM 首组; CAN2 发 GM 次组与正常 shooter 组 (0x1ff)
+            CHECK(rig.bus1.count == before1 + 1);
+            CHECK(rig.bus2.count == before2 + 2);
+            CHECK(rig.bus2.last(0x2fe) != nullptr);
+            CHECK(rig.bus2.last(0x1ff) != nullptr);
+        }
     }
-    CHECK(rig.exec.stats().group_sent == 30); // 两 GM 组 20 帧 + CAN2 10 帧
+    CHECK(rig.exec.stats().group_sent == 30); // 两 GM 组 20 帧 + 底盘 5 帧 + 射击 5 帧
     CHECK(rig.exec.group_stats(0)->computations == 5);
     CHECK(std::fabs(rig.exec.group_stats(0)->last_dt_s - 0.002f) < 1e-7f);
     CHECK(!rig.exec.group_stats(8));
     CHECK(rig.exec.stats().dm_query_sent == 5);
     CHECK(rig.exec.pitch_stats().computations == 5 && rig.exec.pitch_stats().submitted == 5);
     CHECK(rig.exec.stats().dm_enable_sent == 0 && rig.exec.stats().dm_command_sent == 0);
-    const auto* query = rig.bus1.last(0x7ff);
+    const auto* query = rig.bus2.last(0x7ff);
     CHECK(query && query->size == 4 && query->data[0] == 1 && query->data[2] == 0xcc);
     CHECK(rig.exec.feedback_time(Domain::main_yaw)->us == 109123);
 
     rig.at(110);
     rig.feed_all();
     CHECK(rig.app.accept_targets(twist_packet(0.1f), rig.now, Source::remote) == AcceptResult::accepted);
-    rig.bus2.next = SendResult::busy;
+    const auto tx_err_before = rig.exec.stats().group_tx_error;
+    rig.bus1.next = SendResult::busy; // 底盘在 CAN1, 错误总线为 bus1
     rig.step();
     CHECK(rig.exec.axis(Domain::chassis_lf)->enabled());
     CHECK(rig.app.snapshot().permission.authority);
-    CHECK(rig.exec.stats().group_tx_error == 1);
-    rig.bus2.next = SendResult::accepted;
+    // t=110 偶数毫秒: CAN1 上的底盘 (0x200) 与 main_yaw (0x1fe) 遇 busy → 2 次失败;
+    // fire_yaw (0x2fe) 已迁到 CAN2, 不受 CAN1 busy 影响.
+    CHECK(rig.exec.stats().group_tx_error == tx_err_before + 2);
+    rig.bus1.next = SendResult::accepted;
     rig.at(111);
     rig.feed_all();
     CHECK(rig.app.accept_targets(twist_packet(-0.1f), rig.now, Source::remote) == AcceptResult::accepted);
@@ -745,25 +766,49 @@ void multirate_contracts() {
     rig.at(112);
     rig.feed_all();
     rig.step();
-    CHECK(slot_raw(*rig.bus2.last(0x200), 0) > 0); // 恢复发送的是新目标, 不补旧负电流
+    // 恢复发送的是新目标, 不补旧负电流, 底盘帧在 CAN1
+    const auto* chassis_frame = rig.bus1.last(0x200);
+    CHECK(chassis_frame != nullptr && slot_raw(*chassis_frame, 0) > 0);
+    CHECK(rig.bus2.last(0x200) == nullptr);
     rig.at(113);
     rig.feed_all();
     CHECK(rig.app.accept_targets(TargetSnapshot{}, rig.now, Source::remote) == AcceptResult::accepted);
-    const auto before_stop = rig.bus2.count;
+    const auto before_stop1 = rig.bus1.count;
+    const auto before_stop2 = rig.bus2.count;
     rig.step();
-    CHECK(rig.bus2.count == before_stop + 2); // 非到期底盘提前零帧 + 正常 shooter 组
-    CHECK(slot_raw(*rig.bus2.last(0x200), 0) == 0);
+    // CAN1: 非到期底盘提前零帧 (0x200) + 主 yaw 的 GM 首组 (0x1fe) = 2 帧
+    CHECK(rig.bus1.count == before_stop1 + 2);
+    CHECK(slot_raw(*rig.bus1.last(0x200), 0) == 0);
+    // CAN2: GM 次组 (0x2fe) + 正常 shooter 组 = 2 帧
+    CHECK(rig.bus2.count == before_stop2 + 2);
+    CHECK(rig.bus2.last(0x2fe) != nullptr);
+    CHECK(rig.bus2.last(0x1ff) != nullptr);
     CHECK(std::fabs(rig.exec.group_stats(0)->last_dt_s - 0.001f) < 1e-7f);
 
     Rig jitter{config};
     jitter.go_local(99);
+    jitter.bus1.clear();
     jitter.bus2.clear();
     for (unsigned i = 0; i < 20; ++i) {
         jitter.at(100 + i);
         jitter.feed_all();
-        const auto before = jitter.bus2.count;
+        const auto before1 = jitter.bus1.count;
+        const auto before2 = jitter.bus2.count;
         jitter.step(0.001f, ec::MicroTick{(100 + i) * 1000u + (i % 3) * 70u});
-        CHECK(jitter.bus2.count == before + 1);
+        if (i % 2 == 0) {
+            // 99ms 启动后, 偶数毫秒为 shooter 到期: CAN2 发 GM 次组 + shooter (bus2 +2),
+            // CAN1 只发两组 1ms GM 中的主 yaw 首组 (bus1 +1)
+            CHECK(jitter.bus1.count == before1 + 1);
+            CHECK(jitter.bus2.count == before2 + 2);
+            CHECK(jitter.bus2.last(0x1ff) != nullptr);
+        } else {
+            // 奇数毫秒为底盘与 pitch 到期: CAN1 发底盘 + GM 首组 (bus1 +2);
+            // CAN2 发 GM 次组 + pitch 查询 (bus2 +2)
+            CHECK(jitter.bus1.count == before1 + 2);
+            CHECK(jitter.bus1.last(0x200) != nullptr);
+            CHECK(jitter.bus2.count == before2 + 2);
+            CHECK(jitter.bus2.last(0x7ff) != nullptr);
+        }
     }
     CHECK(jitter.exec.group_stats(0)->invalid_steps == 0);
     CHECK(jitter.exec.group_stats(0)->computations == 11);
@@ -793,11 +838,14 @@ void pitch_rejection_contracts() {
     packet.domains[index(Domain::pitch)] = DomainSetpoint{ControlMode::position, 0.3f, 0};
     CHECK(rig.app.accept_targets(packet, rig.now) == AcceptResult::accepted);
     rig.at(101); rig.feed_dm(0, 0); rig.step();
-    CHECK(rig.bus1.last(1) && rig.bus1.last(1)->data[7] == 0xfc);
+    CHECK(rig.bus2.last(1) && rig.bus2.last(1)->data[7] == 0xfc);
+    // pitch 在 CAN2, 停止帧不能出现在 CAN1 上.
+    CHECK(!rig.bus1.last(1));
     rig.at(102); rig.feed_dm(1, 0); rig.step();
     CHECK(rig.exec.stats().dm_command_sent == 1);
-    rig.at(103); rig.feed_dm(1, 0); rig.bus1.clear(); rig.step(0.0f);
-    CHECK(rig.bus1.last(1) && rig.bus1.last(1)->data[7] == 0xfd);
+    rig.at(103); rig.feed_dm(1, 0); rig.bus2.clear(); rig.step(0.0f);
+    CHECK(rig.bus2.last(1) && rig.bus2.last(1)->data[7] == 0xfd);
+    CHECK(!rig.bus1.last(1));
     CHECK(rig.exec.health(rig.now).execution_rejected[index(Domain::pitch)]);
     const auto enables = rig.exec.stats().dm_enable_sent;
     const auto commands = rig.exec.stats().dm_command_sent;
@@ -829,9 +877,9 @@ void pitch_multirate_rejection_contracts() {
     CHECK(rig.exec.stats().dm_enable_sent == 0 && rig.app.target(Domain::pitch));
     rig.at(102); rig.feed_dm(0, 0); rig.step();
     rig.at(103); rig.feed_dm(1, 0); rig.step();
-    rig.at(104); rig.feed_dm(1, 0); rig.bus1.next=SendResult::busy; rig.step();
+    rig.at(104); rig.feed_dm(1, 0); rig.bus2.next=SendResult::busy; rig.step();
     CHECK(!rig.exec.health(rig.now).execution_rejected[index(Domain::pitch)]);
-    rig.bus1.next=SendResult::accepted;
+    rig.bus2.next=SendResult::accepted;
     rig.at(105); rig.feed_dm(1, 0); rig.step();
     rig.at(106); rig.feed_dm(1, 0); rig.step();
     CHECK(rig.exec.stats().dm_command_sent == 1 && rig.app.target(Domain::pitch));
@@ -855,7 +903,7 @@ void pitch_multirate_rejection_contracts() {
     CHECK(encoding.exec.stats().dm_command_sent==0);
     encoding.at(103); encoding.feed_dm(1,0); encoding.step();
     CHECK(!encoding.app.target(Domain::pitch));
-    CHECK(encoding.bus1.last(1) && encoding.bus1.last(1)->data[7]==0xfd);
+    CHECK(encoding.bus2.last(1) && encoding.bus2.last(1)->data[7]==0xfd);
 }
 
 struct SubmissionClock {
@@ -889,7 +937,8 @@ void submission_deadline_contracts() {
             SubmissionClock::reset(base, age, 6);
             rig.step(0.001f, ec::MicroTick{base});
             CHECK(rig.exec.group_stats(0)->last_computed.us == base);
-            const auto* frame = rig.bus2.last(0x200);
+            const auto* frame = rig.bus1.last(0x200);
+            CHECK(rig.bus2.last(0x200) == nullptr);
             if (age < 2000) {
                 CHECK(frame && slot_raw(*frame, 0) != 0);
             } else {
@@ -949,6 +998,137 @@ void early_group_deadline_contracts() {
     }
 }
 
+// 真实 yaw CAN 路由与槽位契约 (离线 Rig 验证):
+//   - main_yaw: GM6020 ID 4 反馈 0x208 (0x204 + 4) 在 CAN1 路由 → 驱动组 1 (0x1fe) 第 4 槽 (index 3)
+//   - fire_yaw: GM6020 ID 6 反馈 0x20a (0x204 + 6) 在 CAN2 路由 → 驱动组 2 (0x2fe) 第 2 槽 (index 1)
+//   - 隔离性: 把反馈注入对方总线不更新状态; 每条总线只发自己的 GM 组
+//   - 槽位纯净: 未装配槽位 (0x1fe 的 1..3 槽, 0x2fe 的 1,3,4 槽) 严格为零
+//   - 超时覆盖: 真实静默超时后健康状态报失联, 输出作废并拒绝
+void yaw_can_route_and_slot_contracts() {
+    Rig rig;
+    CHECK(rig.exec.assembled());
+
+    // 1. 验证配置契约
+    const auto main_slot = rig.app.dji_slot_for(Domain::main_yaw);
+    const auto fire_slot = rig.app.dji_slot_for(Domain::fire_yaw);
+    CHECK(main_slot.has_value());
+    CHECK(fire_slot.has_value());
+    CHECK(rig.config.dji[*main_slot].bus == 1 && rig.config.dji[*main_slot].device_id == 4);
+    CHECK(rig.config.dji[*fire_slot].bus == 2 && rig.config.dji[*fire_slot].device_id == 6);
+
+    // 2. 构造离线真实 CAN 帧: ID4 反馈 0x208 经 CAN1, ID6 反馈 0x20a 经 CAN2
+    rig.at(100);
+    // 错误总线隔离性: 把两条反馈各自注入对方总线, 都不能被接收
+    CanFrame rogue_main{};
+    rogue_main.id = 0x208;
+    rogue_main.size = 8;
+    rogue_main.data[0] = 0x20; rogue_main.data[1] = 0x00;
+    rig.exec.route(2, rogue_main, rig.now);
+    CanFrame rogue_fire = rogue_main;
+    rogue_fire.id = 0x20a;
+    rig.exec.route(1, rogue_fire, rig.now);
+    CHECK(rig.exec.health(rig.now).feedback_lost[index(Domain::main_yaw)]);
+    CHECK(rig.exec.health(rig.now).feedback_lost[index(Domain::fire_yaw)]);
+    CHECK(!rig.exec.feedback_time(Domain::main_yaw).has_value());
+    CHECK(!rig.exec.feedback_time(Domain::fire_yaw).has_value());
+
+    // 在各自正确总线上注入真实反馈帧
+    // main_yaw (ID4): 0x204 + 4 = 0x208
+    CanFrame f_main{};
+    f_main.id = 0x208;
+    f_main.size = 8;
+    // 编码器 = 2048 (约 0.25 圈 = 1.5708 rad), 速度 = 0
+    f_main.data[0] = static_cast<std::uint8_t>(2048 >> 8);
+    f_main.data[1] = static_cast<std::uint8_t>(2048 & 0xffu);
+    f_main.data[2] = 0; f_main.data[3] = 0;
+    f_main.data[6] = 42; // 温度 42°C
+    rig.exec.route(1, f_main, rig.now, ec::MicroTick{100000u});
+
+    // fire_yaw (ID6): 0x204 + 6 = 0x20a, 用户在 CAN2
+    CanFrame f_fire{};
+    f_fire.id = 0x20a;
+    f_fire.size = 8;
+    // 编码器 = 0 (角度 0.0 rad, 处于合法关节范围 [-1.5, 1.5] 内), 速度 = 0
+    f_fire.data[0] = 0;
+    f_fire.data[1] = 0;
+    f_fire.data[2] = 0; f_fire.data[3] = 0;
+    f_fire.data[6] = 45; // 温度 45°C
+    rig.exec.route(2, f_fire, rig.now, ec::MicroTick{100000u});
+
+    // 此时 main_yaw 在 CAN1、fire_yaw 在 CAN2 各自收到反馈
+    CHECK(!rig.exec.health(rig.now).feedback_lost[index(Domain::main_yaw)]);
+    CHECK(!rig.exec.health(rig.now).feedback_lost[index(Domain::fire_yaw)]);
+    CHECK(rig.exec.feedback_time(Domain::main_yaw)->us == 100000u);
+    CHECK(rig.exec.feedback_time(Domain::fire_yaw)->us == 100000u);
+
+    // 3. 进入控制态并下发真实目标 (给其它电机也喂数据以保证全机非阻断)
+    rig.feed_wheels();
+    rig.feed(Domain::friction_left, 0.0f, 0.0f);
+    rig.feed(Domain::friction_right, 0.0f, 0.0f);
+    rig.feed(Domain::trigger, 0.0f, 0.0f);
+    rig.feed_dm(0, 0.0f);
+    rig.go_local(100);
+
+    TargetSnapshot targets{};
+    targets.domains[index(Domain::main_yaw)] = DomainSetpoint{ControlMode::position, 0.5f};
+    targets.domains[index(Domain::fire_yaw)] = DomainSetpoint{ControlMode::position, 0.3f};
+    CHECK(rig.app.accept_targets(targets, rig.now) == AcceptResult::accepted);
+
+    rig.at(101);
+    // 保持反馈新鲜
+    rig.exec.route(1, f_main, rig.now, ec::MicroTick{101000u});
+    rig.exec.route(2, f_fire, rig.now, ec::MicroTick{101000u});
+    rig.bus1.clear();
+    rig.bus2.clear();
+    rig.step();
+
+    // 4. 验证 CAN1 输出帧及对应槽位
+    // main_yaw: ID 4 → 属于 group 1, tx_id = 0x1fe. 槽位 index = (4 - 1) % 4 = 3 (第 4 槽)
+    const auto* frame_0x1fe = rig.bus1.last(0x1fe);
+    CHECK(frame_0x1fe != nullptr);
+    CHECK(frame_0x1fe->size == 8);
+    // 第 4 槽 (index 3) 必须有有效输出
+    CHECK(slot_raw(*frame_0x1fe, 3) != 0);
+    // 第 1, 2, 3 槽未配置 GM6020 设备, 必须严格为 0
+    CHECK(slot_raw(*frame_0x1fe, 0) == 0);
+    CHECK(slot_raw(*frame_0x1fe, 1) == 0);
+    CHECK(slot_raw(*frame_0x1fe, 2) == 0);
+
+    // fire_yaw: ID 6 → 属于 group 2, tx_id = 0x2fe. 槽位 index = (6 - 1) % 4 = 1 (第 2 槽)
+    const auto* frame_0x2fe = rig.bus2.last(0x2fe);
+    CHECK(frame_0x2fe != nullptr);
+    CHECK(frame_0x2fe->size == 8);
+    // 第 2 槽 (index 1) 必须有有效输出
+    CHECK(slot_raw(*frame_0x2fe, 1) != 0);
+    // 第 1, 3, 4 槽未配置 GM6020 设备 (GM6020 亦无 ID8), 必须严格为 0
+    CHECK(slot_raw(*frame_0x2fe, 0) == 0);
+    CHECK(slot_raw(*frame_0x2fe, 2) == 0);
+    CHECK(slot_raw(*frame_0x2fe, 3) == 0);
+
+    // CAN2 绝对不发送另一条总线的 GM 组 (每条总线只发自己的组)
+    CHECK(rig.bus2.last(0x1fe) == nullptr);
+    CHECK(rig.bus1.last(0x2fe) == nullptr);
+
+    // 5. 超时覆盖验证: 超过设备 feedback TTL (例如前进 80 ms 无新鲜反馈)
+    rig.at(185);
+    rig.bus1.clear();
+    rig.step();
+    // 超过 TTL 后必需反馈丢失, 目标作废
+    CHECK(rig.exec.health(rig.now).reference_lost[index(Domain::main_yaw)]);
+    CHECK(rig.exec.health(rig.now).reference_lost[index(Domain::fire_yaw)]);
+    CHECK(!rig.app.target(Domain::main_yaw).has_value());
+    CHECK(!rig.app.target(Domain::fire_yaw).has_value());
+    // 再次步进, 无发送或发送零帧均可; 若存在输出则两槽必须为零.
+    rig.at(186);
+    rig.bus1.clear();
+    rig.bus2.clear();
+    rig.step();
+    const auto* safe_1fe = rig.bus1.last(0x1fe);
+    const auto* safe_2fe = rig.bus2.last(0x2fe);
+    if (safe_1fe) { CHECK(slot_raw(*safe_1fe, 3) == 0); }
+    if (safe_2fe) { CHECK(slot_raw(*safe_2fe, 1) == 0); }
+}
+
 int main() {
     pitch_rejection_contracts();
     pitch_multirate_rejection_contracts();
@@ -964,6 +1144,7 @@ int main() {
     joint_geometry_reference_contracts();
     feedback_loss_contracts();
     readiness_and_layout_contracts();
+    yaw_can_route_and_slot_contracts();
     std::puts("sentinel app execution contracts passed");
     return 0;
 }

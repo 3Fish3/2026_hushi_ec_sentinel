@@ -378,7 +378,10 @@ void four_motor_bench_contracts() {
     CHECK(report.startable && config.independent_motor_bench);
     CHECK(ec::sentinel::board::summarize(config).installed_dji == 3);
     CHECK(ec::sentinel::board::summarize(config).installed_dm == 1);
-    CHECK(config.dji[6].device_id == 2 && config.dji[8].device_id == 3);
+    CHECK(config.dji[4].bus == 1 && config.dji[4].device_id == 4);
+    CHECK(config.dji[6].bus == 1 && config.dji[6].device_id == 2);
+    CHECK(config.dji[8].bus == 1 && config.dji[8].device_id == 3);
+    CHECK(config.dm[0].bus == 2 && config.dm[0].can_id == 1 && config.dm[0].master_id == 0x011);
     auto mode_conflict = config; mode_conflict.dji[8].device_id = 7;
     const auto rejected = validate(mode_conflict, ConfigAudience::deployment);
     CHECK(!rejected.startable && rejected.has(ConfigIssue::dji_command_mode_conflict));
@@ -387,11 +390,34 @@ void four_motor_bench_contracts() {
     for (auto domain : {Domain::main_yaw, Domain::pitch, Domain::friction_left, Domain::trigger}) {
         CHECK(report.domains[domain_index(domain)] == ConfigState::complete);
     }
-    auto alias = config; alias.dji[6].device_id = 1;
+    auto alias = config;
+    alias.dji[6].bus = 2;
+    alias.dji[6].device_id = 1;
     const auto bad = validate(alias, ConfigAudience::deployment);
     CHECK(!bad.startable && bad.has(ConfigIssue::dm_feedback_id_alias));
-    alias.dji[6].bus = 2;
-    CHECK(validate(alias, ConfigAudience::deployment).startable);
+    alias.dji[6].bus = 1;
+    const auto good = validate(alias, ConfigAudience::deployment);
+    CHECK(good.startable && !good.has(ConfigIssue::dm_feedback_id_alias));
+}
+
+// 云台/发射独立调试角色走 board_app_mechanism_config.hpp 的独立装配入口;
+// 装配数量正确不代表地址正确, 这里逐槽核对总线与设备 ID (2026-10-27 实车只读采集确认).
+void mechanism_commissioning_address_contracts() {
+    constexpr std::uint8_t buses[9] = {1, 1, 1, 1, 1, 2, 2, 2, 2};
+    constexpr std::uint8_t ids[9] = {1, 2, 3, 4, 4, 6, 5, 6, 7};
+    for (bool gimbal : {true, false}) {
+        const auto config = ec::sentinel::board::mechanism_commissioning_config(
+            ec::sentinel::board::deployment_config(), gimbal);
+        for (std::size_t i = 0; i < config.dji.size(); ++i) {
+            CHECK(config.dji[i].installed);
+            CHECK(config.dji[i].bus == buses[i]);
+            CHECK(config.dji[i].device_id == ids[i]);
+        }
+        // 达妙 pitch 在 CAN2, 控制 ID1 / 反馈 ID 0x011, 反馈 ID 同时决定记录流匹配.
+        CHECK(config.dm[0].installed);
+        CHECK(config.dm[0].bus == 2 && config.dm[0].can_id == 1 &&
+            config.dm[0].master_id == 0x011);
+    }
 }
 
 int main() {
@@ -403,6 +429,7 @@ int main() {
     mixing_rejected_contracts();
     validation_contracts();
     domain_identity_contracts();
+    mechanism_commissioning_address_contracts();
     std::puts("sentinel app configuration contracts passed");
     return 0;
 }

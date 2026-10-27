@@ -70,6 +70,13 @@ void synthetic_fixture_contracts() {
     CHECK(app.startable());
     CHECK(app.kind() == ConfigKind::synthetic_fixture);
     CHECK(app.dji_slot_for(Domain::main_yaw).has_value());
+    const auto main_yaw = app.dji_slot_for(Domain::main_yaw);
+    const auto fire_yaw = app.dji_slot_for(Domain::fire_yaw);
+    CHECK(fire_yaw.has_value());
+    CHECK(config.dji[*main_yaw].device_id == 4);
+    CHECK(config.dji[*fire_yaw].device_id == 6);
+    CHECK(config.dji[*main_yaw].mode == DjiMode::gm6020_current);
+    CHECK(config.dji[*fire_yaw].mode == DjiMode::gm6020_current);
     CHECK(app.dm_slot_for(Domain::pitch).has_value());
     CHECK(!app.dji_slot_for(Domain::pitch).has_value());
 

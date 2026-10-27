@@ -135,19 +135,50 @@ void test_known_harness_is_consistent_with_app_capacity() {
         const auto protocol = ec::drivers::dji_protocol(entry.mode);
         CHECK(protocol.has_value());
         CHECK(entry.device_id >= 1 && entry.device_id <= protocol->count);
-        // 同总线同设备 ID 不得重复: 重复会让两个槽位争同一个反馈 ID.
+        const auto rx_id = protocol->rx_base + entry.device_id;
+        // 同总线实际反馈 ID 不得重复: 重复会让两个槽位争同一个反馈 ID.
         for (std::size_t j = i + 1; j < board::known_dji_harness.size(); ++j) {
             const auto& other = board::known_dji_harness[j];
-            CHECK(!(other.bus == entry.bus && other.device_id == entry.device_id));
+            const auto other_proto = ec::drivers::dji_protocol(other.mode);
+            CHECK(other_proto.has_value());
+            const auto other_rx_id = other_proto->rx_base + other.device_id;
+            CHECK(!(other.bus == entry.bus && other_rx_id == rx_id));
         }
     }
-    // 双 yaw 在 CAN1 (GM6020), 底盘/摩擦/拨弹在 CAN2: 这是硬件 Checklist 已确认的分布.
+    CHECK(board::known_dji_harness[0].bus == 1 &&
+        board::known_dji_harness[0].device_id == 1 &&
+        board::known_dji_harness[0].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[1].bus == 1 &&
+        board::known_dji_harness[1].device_id == 2 &&
+        board::known_dji_harness[1].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[2].bus == 1 &&
+        board::known_dji_harness[2].device_id == 3 &&
+        board::known_dji_harness[2].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[3].bus == 1 &&
+        board::known_dji_harness[3].device_id == 4 &&
+        board::known_dji_harness[3].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[4].bus == 1 &&
+        board::known_dji_harness[4].device_id == 4 &&
+        board::known_dji_harness[4].mode == ec::drivers::DjiMode::gm6020_current);
+    CHECK(board::known_dji_harness[5].bus == 2 &&
+        board::known_dji_harness[5].device_id == 6 &&
+        board::known_dji_harness[5].mode == ec::drivers::DjiMode::gm6020_current);
+    CHECK(board::known_dji_harness[6].bus == 2 &&
+        board::known_dji_harness[6].device_id == 5 &&
+        board::known_dji_harness[6].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[7].bus == 2 &&
+        board::known_dji_harness[7].device_id == 6 &&
+        board::known_dji_harness[7].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(board::known_dji_harness[8].bus == 2 &&
+        board::known_dji_harness[8].device_id == 7 &&
+        board::known_dji_harness[8].mode == ec::drivers::DjiMode::c610_current);
+    // CAN1: 四轮 C620 (ID1-4) + 主 yaw GM6020 (ID4); CAN2: 发射 yaw GM6020 (ID6) + 两摩擦轮 C620 (ID5/6) + 拨弹 C610 (ID7).
     std::size_t bus1 = 0, bus2 = 0;
     for (const auto& entry : board::known_dji_harness) {
         (entry.bus == 1 ? bus1 : bus2) += 1;
     }
-    CHECK(bus1 == 2);
-    CHECK(bus2 == 7);
+    CHECK(bus1 == 5);
+    CHECK(bus2 == 4);
 }
 
 void test_control_step_boundaries() {

@@ -247,12 +247,18 @@ void four_motor_execution_contracts() {
     CHECK(rig.app.accept_targets(packet, rig.now) == AcceptResult::accepted);
     for (unsigned t=2; t<=7; ++t) { rig.at(t); rig.feed_all(); rig.step(); }
     CHECK(!rig.app.snapshot().launch_allowed);
-    CHECK(rig.bus2.count == 0);
+    CHECK(rig.bus1.last(1) == nullptr);
+    CHECK(rig.bus1.last(0x7ff) == nullptr);
+    CHECK(rig.bus2.last(1) != nullptr);
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        const auto& f = rig.bus2.frames[i];
+        CHECK((f.id == 1 && f.size == 8) ||
+              (f.id == 0x7ff && f.size == 4 && f.data[0] == 1 && f.data[2] == 0xcc));
+    }
     CHECK(rig.bus1.last(0x200) && slot_raw(*rig.bus1.last(0x200),1)>0);
     CHECK(rig.bus1.last(0x200) && slot_raw(*rig.bus1.last(0x200),2)>0);
     CHECK(slot_raw(*rig.bus1.last(0x200),0)==0 && slot_raw(*rig.bus1.last(0x200),3)==0);
     CHECK(rig.bus1.last(0x1fe) && slot_raw(*rig.bus1.last(0x1fe),3)>0);
-    CHECK(rig.bus1.last(1) != nullptr);
     for (auto domain : {Domain::main_yaw, Domain::pitch, Domain::friction_left, Domain::trigger}) {
         CHECK(rig.app.snapshot().executions[index(domain)].execute);
     }
@@ -267,10 +273,22 @@ void four_motor_execution_contracts() {
     CHECK(!rig.app.snapshot().executions[index(Domain::pitch)].execute);
     CHECK(rig.app.snapshot().executions[index(Domain::main_yaw)].execute);
     CHECK(rig.app.snapshot().executions[index(Domain::trigger)].execute);
+    CHECK(rig.bus1.last(1) == nullptr);
     CHECK(rig.app.accept_targets(TargetSnapshot{}, rig.now) == AcceptResult::accepted);
     for (unsigned t=16; t<=19; ++t) { rig.at(t); rig.feed_all(); rig.step(); }
     CHECK(slot_raw(*rig.bus1.last(0x1fe),3)==0 && slot_raw(*rig.bus1.last(0x200),2)==0);
     CHECK(rig.bus1.last(0x1ff)==nullptr); // 包含上电、运行、故障与撤销阶段, 均不发送GM电压帧.
+    CHECK(rig.bus1.last(1) == nullptr);
+    CHECK(rig.bus1.last(0x7ff) == nullptr);
+    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
+        const auto id = rig.bus1.frames[i].id;
+        CHECK(id == 0x200 || id == 0x1fe);
+    }
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        const auto& f = rig.bus2.frames[i];
+        CHECK((f.id == 1 && f.size == 8) ||
+              (f.id == 0x7ff && f.size == 4 && f.data[0] == 1 && f.data[2] == 0xcc));
+    }
 }
 
 TargetSnapshot twist_packet(float vx_mps, float vy_mps = 0.0f, float wz_rad_s = 0.0f) {

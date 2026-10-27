@@ -190,15 +190,19 @@ class Tests(unittest.TestCase):
         missing, gm = cap.decode_page(golden[3])['motors']
         self.assertEqual(missing['state'], 'NO_FEEDBACK')
         self.assertEqual(gm['state'], 'ONLINE')
+        self.assertEqual((gm['name'], gm['bus'], gm['can_id']), ('fire_yaw', 2, 0x20a))
         self.assertEqual(cap.display_state(gm, 2000, 100, 'ONLINE'), 'ONLINE / SNAPSHOT_OLD')
         self.assertEqual(cap.display_state(gm, 2000, 100, 'LOST'), 'LINK_LOST (cached)')
-        data = bytearray(golden[3]); struct.pack_into('<I', data, 4, 259)
+        data = bytearray(golden[3])
+        struct.pack_into('<I', data, 4, 259)
         self.assertEqual(cap.decode_page(data)['motors'][1]['state'], 'LOST')
         self.assertEqual(cap.decode_page(golden[9])['registers'][0]['state'], 'NO_REPLY')
         self.assertEqual(cap.sample_state(0, False, 0, 50, 'INIT_FAILED'), 'INIT_FAILED')
 
     def test_early_firmware_is_explained_not_guessed(self):
-        old = bytearray(summary()); old[0] = 1; del old[96:104]
+        old = bytearray(summary())
+        old[0] = 1
+        del old[96:104]
         with self.assertRaisesRegex(cap.CaptureProtocolError, r'schema=1 .*length=184 .*sentinel_capture.bin'):
             cap.decode_page(old)
 
@@ -209,11 +213,15 @@ class Tests(unittest.TestCase):
             log.emit({'event': 'page', 'sequence': 2, 'segment': 0, 'host_elapsed_s': 1, 'data': cap.decode_page(golden[9])})
             log.emit({'event': 'mark', 'label': 'zero', 'reference': '0 rad'})
             log.close()
-            with self.assertRaises(FileExistsError): cap.CaptureLog(log_path, {})
+            with self.assertRaises(FileExistsError):
+                cap.CaptureLog(log_path, {})
             cap.export_csv(log_path, csv_path)
             text = csv_path.read_text(encoding='utf-8-sig')
-            self.assertIn('1.25', text); self.assertIn('zero', text)
-            with self.assertRaises(FileExistsError): cap.export_csv(log_path, csv_path)
+            self.assertIn('1.25', text)
+            self.assertIn('zero', text)
+            with self.assertRaises(FileExistsError):
+                cap.export_csv(log_path, csv_path)
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()

@@ -263,8 +263,9 @@ void pitch_cycle_rejection_contracts() {
     CHECK(r.executor.stats().dm_command_sent>0);
     r.cycle_dt=0.0f; r.tick();
     const auto enables=r.executor.stats().dm_enable_sent, commands=r.executor.stats().dm_command_sent;
-    const auto stopped=r.bus1.last_with_id(*r.config.dm[0].can_id);
+    const auto stopped=r.bus2.last_with_id(*r.config.dm[0].can_id);
     CHECK(stopped && stopped->data[7]==0xfd);
+    CHECK(!r.bus1.last_with_id(*r.config.dm[0].can_id)); // pitch 在 CAN2
     for (int i=0;i<8;++i) {
         r.tick();
         CHECK(!r.app.target(Domain::pitch));
@@ -455,7 +456,8 @@ void protocol_composition_metrics() {
     r.bus1.refuse=r.uart_busy=r.duplicate_imu=false;
     CHECK(tracking==2000 && chassis_tracking==2000 && scaled);
     CHECK(r.decoder.rejected()==1);
-    CHECK(r.executor.stats().group_tx_error-start_stats.group_tx_error==2); // CAN1 两个 GM 组各一次 busy.
+    // CAN1 只剩底盘组与主 yaw 的 GM 首组各一次 busy (发射 yaw 已迁至 CAN2).
+    CHECK(r.executor.stats().group_tx_error-start_stats.group_tx_error==2);
     CHECK(r.perception.stats().rejected_duplicate==1);
     CHECK(r.app.stats().source_changes==changes && r.perception.stats().reprime_events==0);
     CHECK(r.max_pending==4 && r.replies.diagnostics()[8]>0 && r.replies.diagnostics()[6]>0);
@@ -471,7 +473,7 @@ void protocol_composition_metrics() {
     for (std::size_t i=0;i<8;++i) if(const auto s=r.executor.group_stats(i)) {
         const auto count=s->computations-computations[i];
         std::printf("N6 group bus=%u id=%03x computed=%u submitted=%u max_dt=%.6f\n",s->bus,s->id,count,s->submitted-submitted[i],s->max_dt_s);
-        CHECK(count==(s->bus==1 ? 2000u : 1000u));
+        CHECK(count==(s->id==0x1fe || s->id==0x2fe ? 2000u : 1000u));
     }
     CHECK(r.executor.pitch_stats().computations-pitch_start.computations==1000);
     std::printf("N6 pitch computed=%u submitted=%u\n",r.executor.pitch_stats().computations-pitch_start.computations,

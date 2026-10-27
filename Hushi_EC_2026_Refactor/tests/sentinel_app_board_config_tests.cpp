@@ -135,19 +135,24 @@ void test_known_harness_is_consistent_with_app_capacity() {
         const auto protocol = ec::drivers::dji_protocol(entry.mode);
         CHECK(protocol.has_value());
         CHECK(entry.device_id >= 1 && entry.device_id <= protocol->count);
-        // 同总线同设备 ID 不得重复: 重复会让两个槽位争同一个反馈 ID.
+        // 同总线同反馈 ID 不得重复: 重复会让两个槽位争同一帧. 反馈 ID 由协议基准加
+        // 设备 ID 决定, 所以不同协议下同一个 device_id 并不冲突 (如 CAN2 的 C620 ID6
+        // 反馈 0x206 与 GM6020 ID6 反馈 0x20a).
         for (std::size_t j = i + 1; j < board::known_dji_harness.size(); ++j) {
             const auto& other = board::known_dji_harness[j];
-            CHECK(!(other.bus == entry.bus && other.device_id == entry.device_id));
+            const auto other_protocol = ec::drivers::dji_protocol(other.mode);
+            CHECK(other_protocol.has_value());
+            CHECK(other.bus != entry.bus ||
+                other_protocol->rx_base + other.device_id != protocol->rx_base + entry.device_id);
         }
     }
-    // 双 yaw 在 CAN1 (GM6020), 底盘/摩擦/拨弹在 CAN2: 这是硬件 Checklist 已确认的分布.
+    // 四轮与主 yaw 在 CAN1, 发射 yaw/摩擦/拨弹在 CAN2: 2026-10-27 实车采集与用户接线确认.
     std::size_t bus1 = 0, bus2 = 0;
     for (const auto& entry : board::known_dji_harness) {
         (entry.bus == 1 ? bus1 : bus2) += 1;
     }
-    CHECK(bus1 == 2);
-    CHECK(bus2 == 7);
+    CHECK(bus1 == 5);
+    CHECK(bus2 == 4);
 }
 
 void test_control_step_boundaries() {

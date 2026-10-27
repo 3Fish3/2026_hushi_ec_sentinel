@@ -247,12 +247,19 @@ void four_motor_execution_contracts() {
     CHECK(rig.app.accept_targets(packet, rig.now) == AcceptResult::accepted);
     for (unsigned t=2; t<=7; ++t) { rig.at(t); rig.feed_all(); rig.step(); }
     CHECK(!rig.app.snapshot().launch_allowed);
-    CHECK(rig.bus2.count == 0);
+    CHECK(rig.bus2.last(1) != nullptr && rig.bus2.last(1)->size == 8);
+    CHECK(rig.bus1.last(1) == nullptr);
+    CHECK(rig.bus2.last(0x200) == nullptr && rig.bus2.last(0x1fe) == nullptr && rig.bus2.last(0x1ff) == nullptr);
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        CHECK(rig.bus2.frames[i].id == 1 || rig.bus2.frames[i].id == 0x7ff);
+    }
+    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
+        CHECK(rig.bus1.frames[i].id == 0x200 || rig.bus1.frames[i].id == 0x1fe);
+    }
     CHECK(rig.bus1.last(0x200) && slot_raw(*rig.bus1.last(0x200),1)>0);
     CHECK(rig.bus1.last(0x200) && slot_raw(*rig.bus1.last(0x200),2)>0);
     CHECK(slot_raw(*rig.bus1.last(0x200),0)==0 && slot_raw(*rig.bus1.last(0x200),3)==0);
     CHECK(rig.bus1.last(0x1fe) && slot_raw(*rig.bus1.last(0x1fe),3)>0);
-    CHECK(rig.bus1.last(1) != nullptr);
     for (auto domain : {Domain::main_yaw, Domain::pitch, Domain::friction_left, Domain::trigger}) {
         CHECK(rig.app.snapshot().executions[index(domain)].execute);
     }
@@ -271,6 +278,17 @@ void four_motor_execution_contracts() {
     for (unsigned t=16; t<=19; ++t) { rig.at(t); rig.feed_all(); rig.step(); }
     CHECK(slot_raw(*rig.bus1.last(0x1fe),3)==0 && slot_raw(*rig.bus1.last(0x200),2)==0);
     CHECK(rig.bus1.last(0x1ff)==nullptr); // 包含上电、运行、故障与撤销阶段, 均不发送GM电压帧.
+    // 覆盖全周期历史捕获帧的严格总线白名单:
+    for (std::size_t i = 0; i < rig.bus1.count; ++i) {
+        const auto& f = rig.bus1.frames[i];
+        CHECK((f.id == 0x200 || f.id == 0x1fe) && f.size == 8);
+    }
+    for (std::size_t i = 0; i < rig.bus2.count; ++i) {
+        const auto& f = rig.bus2.frames[i];
+        CHECK(((f.id == 1 && f.size == 8) || (f.id == 0x7ff && f.size == 4)));
+    }
+    CHECK(rig.bus1.last(1) == nullptr);
+    CHECK(rig.bus2.last(0x200) == nullptr && rig.bus2.last(0x1fe) == nullptr);
 }
 
 TargetSnapshot twist_packet(float vx_mps, float vy_mps = 0.0f, float wz_rad_s = 0.0f) {

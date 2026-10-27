@@ -135,19 +135,41 @@ void test_known_harness_is_consistent_with_app_capacity() {
         const auto protocol = ec::drivers::dji_protocol(entry.mode);
         CHECK(protocol.has_value());
         CHECK(entry.device_id >= 1 && entry.device_id <= protocol->count);
-        // 同总线同设备 ID 不得重复: 重复会让两个槽位争同一个反馈 ID.
+        // 同总线实际反馈 ID 不得重复: 重复会让两个槽位争同一个反馈 ID.
+        const auto entry_feedback = protocol->rx_base + entry.device_id;
         for (std::size_t j = i + 1; j < board::known_dji_harness.size(); ++j) {
             const auto& other = board::known_dji_harness[j];
-            CHECK(!(other.bus == entry.bus && other.device_id == entry.device_id));
+            const auto other_protocol = ec::drivers::dji_protocol(other.mode);
+            CHECK(other_protocol.has_value());
+            const auto other_feedback = other_protocol->rx_base + other.device_id;
+            CHECK(!(other.bus == entry.bus && other_feedback == entry_feedback));
         }
     }
-    // 双 yaw 在 CAN1 (GM6020), 底盘/摩擦/拨弹在 CAN2: 这是硬件 Checklist 已确认的分布.
+    // 四轮底盘与主 yaw 在 CAN1, 发射 yaw、摩擦轮与拨弹在 CAN2: 这是硬件 Checklist 与实车采集确认的分布.
     std::size_t bus1 = 0, bus2 = 0;
     for (const auto& entry : board::known_dji_harness) {
         (entry.bus == 1 ? bus1 : bus2) += 1;
     }
-    CHECK(bus1 == 2);
-    CHECK(bus2 == 7);
+    CHECK(bus1 == 5);
+    CHECK(bus2 == 4);
+
+    // 独立期望表精确核对九条已验证映射, 确保总线、电调模式与设备ID全一致.
+    constexpr std::array<board::HarnessEntry, 9> expected{{
+        {1, ec::drivers::DjiMode::c620_current, 1},
+        {1, ec::drivers::DjiMode::c620_current, 2},
+        {1, ec::drivers::DjiMode::c620_current, 3},
+        {1, ec::drivers::DjiMode::c620_current, 4},
+        {1, ec::drivers::DjiMode::gm6020_current, 4},
+        {2, ec::drivers::DjiMode::gm6020_current, 6},
+        {2, ec::drivers::DjiMode::c620_current, 5},
+        {2, ec::drivers::DjiMode::c620_current, 6},
+        {2, ec::drivers::DjiMode::c610_current, 7},
+    }};
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        CHECK(board::known_dji_harness[i].bus == expected[i].bus);
+        CHECK(board::known_dji_harness[i].mode == expected[i].mode);
+        CHECK(board::known_dji_harness[i].device_id == expected[i].device_id);
+    }
 }
 
 void test_control_step_boundaries() {

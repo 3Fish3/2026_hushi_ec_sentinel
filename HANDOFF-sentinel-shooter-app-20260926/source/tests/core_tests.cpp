@@ -417,12 +417,20 @@ void dr16_contracts() {
 void board_observation_contracts() {
     using namespace ec::drivers;
     CHECK(ec::sentinel::dji_mode(1, 0x208) == DjiMode::gm6020_current);
-    CHECK(ec::sentinel::dji_mode(1, 0x20a) == DjiMode::gm6020_current);
-    for (std::uint16_t id = 0x201; id <= 0x206; ++id) {
-        CHECK(ec::sentinel::dji_mode(2, id) == DjiMode::c620_current);
+    for (std::uint16_t id = 0x201; id <= 0x204; ++id) {
+        CHECK(ec::sentinel::dji_mode(1, id) == DjiMode::c620_current);
     }
+    CHECK(ec::sentinel::dji_mode(2, 0x20a) == DjiMode::gm6020_current);
+    CHECK(ec::sentinel::dji_mode(2, 0x205) == DjiMode::c620_current);
+    CHECK(ec::sentinel::dji_mode(2, 0x206) == DjiMode::c620_current);
     CHECK(ec::sentinel::dji_mode(2, 0x207) == DjiMode::c610_current);
-    CHECK(!ec::sentinel::dji_mode(1, 0x201));
+    CHECK(!ec::sentinel::dji_mode(1, 0x20a));
+    CHECK(!ec::sentinel::dji_mode(1, 0x205));
+    CHECK(!ec::sentinel::dji_mode(1, 0x206));
+    CHECK(!ec::sentinel::dji_mode(1, 0x207));
+    for (std::uint16_t id = 0x201; id <= 0x204; ++id) {
+        CHECK(!ec::sentinel::dji_mode(2, id));
+    }
     CHECK(!ec::sentinel::dji_mode(2, 0x208));
     CHECK(!ec::sentinel::dji_mode(3, 0x207));
     ec::transport::CanFrame frame{0x207, 8, {0, 0, 0x03, 0xe8, 0, 0, 0xaa, 0}};

@@ -175,9 +175,10 @@ void raw_frame_to_can_contracts() {
     CHECK(rig.outcome.intent == SourceIntent::local);
     CHECK(rig.outcome.accept_attempted);
     CHECK(rig.outcome.accept == ec::sentinel::app::AcceptResult::accepted);
-    // 底盘四轮在 CAN2 组 0x200 (合成夹具把 lf/rf/lb/rb 装在 id1..4).
-    const auto frame = rig.bus2.last_with_id(0x200);
+    // 底盘四轮在 CAN1 组 0x200 (合成夹具把 lf/rf/lb/rb 装在 id1..4).
+    const auto frame = rig.bus1.last_with_id(0x200);
     CHECK(frame.has_value());
+    CHECK(!rig.bus2.last_with_id(0x200).has_value());
     if (frame) {
         // 轮 lf/rb 滚动方向 3π/4, rf/lb 为 π/4: vx>0 时两组符号相反 (与执行契约一致).
         CHECK(slot_raw(*frame, 0) < 0);
@@ -186,9 +187,9 @@ void raw_frame_to_can_contracts() {
         CHECK(slot_raw(*frame, 3) > 0);
     }
     // 槽位重复读取不重复计数: 板级每周期都会读到同一份样本.
-    const auto frames_before = rig.bus2.sent;
+    const auto frames_before = rig.bus1.sent;
     rig.cycle_once();
-    CHECK(rig.bus2.sent > frames_before); // 目标仍在有效期内 → 继续按周期发帧
+    CHECK(rig.bus1.sent > frames_before); // 目标仍在有效期内 → 继续按周期发帧
     CHECK(rig.cycle.remote_input().accepted() == 2); // 只有两份真实样本被接受
 
     // 遥控失联 (样本过期) → 撤销来源与目标, 四轮显式零输出.
@@ -196,7 +197,7 @@ void raw_frame_to_can_contracts() {
     rig.cycle_once();
     CHECK(!rig.outcome.remote_online);
     CHECK(!rig.app.target(Domain::chassis_lf).has_value());
-    const auto zero = rig.bus2.last_with_id(0x200);
+    const auto zero = rig.bus1.last_with_id(0x200);
     CHECK(zero.has_value());
     if (zero) {
         for (std::size_t slot = 0; slot < 4; ++slot) { CHECK(slot_raw(*zero, slot) == 0); }

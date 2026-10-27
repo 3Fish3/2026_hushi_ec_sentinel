@@ -61,24 +61,39 @@ struct Rig {
             if (static_cast<int>(i)==missing_wheel) { continue; }
             ec::transport::CanFrame feedback{}; feedback.id=0x201u+i; feedback.size=8;
             feedback.data[0]=4; // 原生编码1024, 零RPM/电流, 每周期真实新反馈.
-            executor.route(2, feedback, now, *in.now_us);
+            executor.route(1, feedback, now, *in.now_us);
         }
         bus1.clear(); bus2.clear();
         static_cast<void>(cycle.control(in)); cycle.commit(in);
         // 无论来源或输入如何, 未开放机构均不获得执行资格.
         for (std::size_t i=4; i<domain_count; ++i) { CHECK(!app.snapshot().executions[i].execute); }
-        for (const auto& f:bus1.frames) {
-            if (f.id==0x1fe || f.id==0x2fe) { for (auto b:f.data) { CHECK(b==0); } }
-            else { CHECK((f.id==1 && f.size==8 && f.data[7]==0xfd) ||
-                (f.id==0x7ff && f.size==4 && f.data[0]==1 && f.data[2]==0xcc)); }
+        for (const auto& f : bus1.frames) {
+            if (f.id == 0x200) {
+                CHECK(f.size == 8);
+            } else if (f.id == 0x1fe) {
+                CHECK(f.size == 8);
+                for (auto b : f.data) { CHECK(b == 0); }
+            } else {
+                CHECK(false); // 遇到非预期帧直接判失败
+            }
         }
-        if (const auto stop=bus2.last_with_id(0x1ff)) { for (auto b:stop->data) { CHECK(b==0); } }
+        for (const auto& f : bus2.frames) {
+            if (f.id == 0x2fe || f.id == 0x1ff) {
+                CHECK(f.size == 8);
+                for (auto b : f.data) { CHECK(b == 0); }
+            } else if ((f.id == 1 && f.size == 8 && f.data[7] == 0xfd) ||
+                       (f.id == 0x7ff && f.size == 4 && f.data[0] == 1 && f.data[2] == 0xcc)) {
+                // 合法 DM 失能/查询帧
+            } else {
+                CHECK(false); // 遇到非预期帧直接判失败
+            }
+        }
         ++now.ms;
     }
     std::array<int,4> command(const Remote& remote) {
         for (unsigned retry=0; retry<4; ++retry) {
             tick(remote);
-            if (const auto f=bus2.last_with_id(0x200)) {
+            if (const auto f=bus1.last_with_id(0x200)) {
                 std::array<int,4> out{};
                 for (unsigned i=0; i<4; ++i) { out[i]=*raw_slot(*f,i); }
                 return out;
@@ -94,10 +109,16 @@ void configuration() {
     CHECK(board::deployment_summary.installed_dji==9 && board::deployment_summary.installed_dm==1);
     const auto geometry=omni_drive(c); CHECK(geometry && ec::motion::omni_well_posed(*geometry));
     for (unsigned i=0; i<4; ++i) {
-        CHECK(c.dji[i].bus==2 && c.dji[i].device_id==i+1);
+        CHECK(c.dji[i].bus==1 && c.dji[i].device_id==i+1);
         CHECK(*c.dji[i].rotor_per_axis==19.0f && *c.dji[i].max_axis_velocity_rad_s==10.0f);
         CHECK(std::fabs(geometry->wheels[i].radius_m-0.0819702695f)<1e-8f);
     }
+    CHECK(c.dji[4].bus == 1 && c.dji[4].device_id == 4 && c.dji[4].mode == ec::drivers::DjiMode::gm6020_current);
+    CHECK(c.dji[5].bus == 2 && c.dji[5].device_id == 6 && c.dji[5].mode == ec::drivers::DjiMode::gm6020_current);
+    CHECK(c.dji[6].bus == 2 && c.dji[6].device_id == 5 && c.dji[6].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(c.dji[7].bus == 2 && c.dji[7].device_id == 6 && c.dji[7].mode == ec::drivers::DjiMode::c620_current);
+    CHECK(c.dji[8].bus == 2 && c.dji[8].device_id == 7 && c.dji[8].mode == ec::drivers::DjiMode::c610_current);
+    CHECK(c.dm[0].bus == 2 && c.dm[0].can_id == 1 && c.dm[0].master_id == 0x011);
     for (const auto twist:std::array<ec::motion::PlanarTwist,3>{{{0.4f,0,0},{0,0.4f,0},{0,0,0.8f}}}) {
         const auto speeds=ec::motion::omni_wheel_speeds(*geometry,twist); CHECK(speeds);
         const auto inverse=ec::motion::omni_twist(*geometry,*speeds); CHECK(inverse);
@@ -162,7 +183,7 @@ void missing_feedback() {
     for(auto value:rig.command(drive)) { CHECK(value>0); }
     for(unsigned i=0;i<60;++i) { rig.tick(drive,2); }
     for(unsigned i=0;i<4;++i) { CHECK(!rig.app.snapshot().executions[i].execute); }
-    const auto output=rig.bus2.last_with_id(0x200); CHECK(output);
+    const auto output=rig.bus1.last_with_id(0x200); CHECK(output);
     for(unsigned i=0;i<4;++i) { CHECK(*raw_slot(*output,i)==0); }
 }
 } // 内部测试

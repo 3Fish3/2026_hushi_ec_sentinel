@@ -54,7 +54,7 @@ struct Rig {
         plant.emit_feedback(config,[&](std::uint8_t bus,const ec::transport::CanFrame& f,ec::Tick at) {
             executor.route(bus,f,at,*in.now_us);
             if constexpr(gimbal) {
-                if(bus==1 && (f.id==0x208 || f.id==0x20a)) {
+                if((bus==1 && f.id==0x208) || (bus==2 && f.id==0x20a)) {
                     velocities[f.id==0x208?0:1].receive(static_cast<std::uint16_t>((f.data[0]<<8)|f.data[1]),at,*in.now_us);
                 }
             }
@@ -73,9 +73,16 @@ struct Rig {
             if(f.id==0x200 || (gimbal && f.id==0x1ff)) { for(auto b:f.data) { CHECK(b==0); } }
         }
         if constexpr(!gimbal) {
+            // CAN1 在发射角色只剩底盘与主 yaw: 未启用机构只允许显式零帧, 不得混入其它帧.
             for(const auto& f:bus1.frames) {
-                if(f.id==0x1fe || f.id==0x2fe) { for(auto b:f.data) { CHECK(b==0); } }
-                else { CHECK((f.id==1 && f.size==8 && f.data[7]==0xfd) || (f.id==0x7ff && f.size==4 && f.data[2]==0xcc)); }
+                if(f.id==0x200 || f.id==0x1fe) { for(auto b:f.data) { CHECK(b==0); } }
+                else { CHECK(false); }
+            }
+            // CAN2 承载发射组 0x1ff、未启用的发射 yaw 0x2fe (零帧) 与达妙 pitch 帧.
+            for(const auto& f:bus2.frames) {
+                if(f.id==0x1ff) { continue; }
+                if(f.id==0x2fe) { for(auto b:f.data) { CHECK(b==0); } continue; }
+                CHECK((f.id==1 && f.size==8 && f.data[7]==0xfd) || (f.id==0x7ff && f.size==4 && f.data[2]==0xcc));
             }
         }
         if(advance) { plant.integrate(config,bus1,bus2,0.001f); }
@@ -127,7 +134,7 @@ void gimbal_contracts() {
     CHECK(r.targets(Domain::main_yaw,0.4f)==app::AcceptResult::accepted);
     r.tick();CHECK(*host::raw_slot(*r.bus1.last_with_id(0x1fe),3)>0);
     CHECK(r.targets(Domain::fire_yaw,-0.4f)==app::AcceptResult::accepted);
-    r.tick();CHECK(*host::raw_slot(*r.bus1.last_with_id(0x2fe),1)<0);
+    r.tick();CHECK(*host::raw_slot(*r.bus2.last_with_id(0x2fe),1)<0); // 发射 yaw 在 CAN2
     // 未测机械端点不复用旧限位; 此处仅离线接收验证, 不对实物下发大角度.
     CHECK(r.targets(Domain::fire_yaw,4.0f)==app::AcceptResult::accepted);
     CHECK(r.targets(Domain::pitch,12.4f)==app::AcceptResult::limit_violation); // 加零偏后越MIT映射范围
@@ -135,7 +142,7 @@ void gimbal_contracts() {
     bool mit=false;
     for(int i=0;i<12;++i) {
         r.tick(true);
-        for(const auto& f:r.bus1.frames) if(f.id==1 && f.size==8 && f.data[0]!=0xff) {
+        for(const auto& f:r.bus2.frames) if(f.id==1 && f.size==8 && f.data[0]!=0xff) { // pitch 在 CAN2
             const auto decoded=host::decode_dm_mit_command(f,*r.config.dm[0].limits);CHECK(decoded);
             CHECK(std::fabs(decoded->position_rad-(0.1f+*r.config.joints[2].zero_offset_rad))<0.001f);mit=true;
         }
@@ -143,7 +150,7 @@ void gimbal_contracts() {
     CHECK(mit);
     CHECK(r.application.accept_targets({},r.now,app::Source::maintenance)==app::AcceptResult::accepted);
     bool disable=false;
-    for(int i=0;i<6;++i) {r.tick(true);for(const auto& f:r.bus1.frames)if(f.id==1 && f.size==8 && f.data[7]==0xfd)disable=true;}
+    for(int i=0;i<6;++i) {r.tick(true);for(const auto& f:r.bus2.frames)if(f.id==1 && f.size==8 && f.data[7]==0xfd)disable=true;}
     CHECK(disable);
     // 跨单圈边界保持本次连续角, 不在编码0处回零或触发虚构端点.
     for(int i=0;i<1100;++i) { r.plant.dji[4].position_rad+=0.007f;r.tick(); }
