@@ -277,6 +277,9 @@ if(EC_BUILD_TESTS)
         add_test(NAME sentinel_console_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/sentinel_console_tests.py" "$<TARGET_FILE:ec_sentinel_app_host>")
         set_tests_properties(sentinel_console_contracts PROPERTIES TIMEOUT 60)
+        add_test(NAME sentinel_yaw_test_contracts COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/sentinel_yaw_test_tests.py")
+        set_tests_properties(sentinel_yaw_test_contracts PROPERTIES TIMEOUT 30)
         add_test(NAME firmware_tool_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/firmware_tool_tests.py")
         set_tests_properties(firmware_tool_contracts PROPERTIES TIMEOUT 30)
