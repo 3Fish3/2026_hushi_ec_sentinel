@@ -1,0 +1,13 @@
+{
+  "profile": "chassis",
+  "label": "app-chassis-20261003-015821",
+  "sha256": "8bfe86670e3cadc6ec0f89240fb3c53b0f1d05c03257b9dafae3ca6faccea6d2",
+  "bytes": 199128,
+  "flash_base": 134217728,
+  "sectors": [
+    0,
+    5
+  ],
+  "erase_end": 134479871,
+  "source_elf": "E:\\RoboMaster\\EC\\Hushi_EC_2026_Refactor\\build\\app-chassis-arm-Release\\boards\\sentinel_f407\\sentinel_app.elf"
+}
