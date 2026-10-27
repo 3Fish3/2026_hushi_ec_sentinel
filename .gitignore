@@ -43,7 +43,8 @@ CompileCommands.json
 
 # 3. Python 虚拟环境与打包产物 (Python venvs, bytecode, packaging)
 # ------------------------------------------------------------------------------
-**/.venv/
+# Match both environment directories and compatibility symlinks.
+**/.venv
 **/venv/
 **/env/
 **/__pycache__/
