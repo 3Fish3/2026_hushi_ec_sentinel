@@ -14,7 +14,7 @@ inline constexpr float chassis_remote_rotation_rad_s = 0.8f;
 [[nodiscard]] constexpr app::SentinelConfig chassis_commissioning_config(
     app::SentinelConfig config) noexcept {
     // 保留整车已安装地址, 未调机构不创建控制器, 由执行器持续提交明确停止帧.
-    constexpr std::array<std::uint8_t, 9> buses{{2, 2, 2, 2, 1, 1, 2, 2, 2}};
+    constexpr std::array<std::uint8_t, 9> buses{{1, 1, 1, 1, 1, 2, 2, 2, 2}};
     constexpr std::array<std::uint8_t, 9> ids{{1, 2, 3, 4, 4, 6, 5, 6, 7}};
     for (std::size_t i = 0; i < config.dji.size(); ++i) {
         auto& slot = config.dji[i];
@@ -46,8 +46,8 @@ inline constexpr float chassis_remote_rotation_rad_s = 0.8f;
     }
     auto& pitch = config.dm[0];
     pitch.domain = app::Domain::pitch; pitch.installed = true;
-    pitch.origin = app::Origin::user_confirmed; pitch.bus = 1;
-    pitch.can_id = 1; pitch.master_id = 0;
+    pitch.origin = app::Origin::user_confirmed; pitch.bus = 2;
+    pitch.can_id = 1; pitch.master_id = 0x011;
     pitch.limits = drivers::DmMitLimits{12.5f, 30.0f, 10.0f};
     pitch.feedback_ttl = Lifetime{100};
     // 不提供MIT增益或机械参考, 不授予pitch驱动资格; 调试上电保持既有失能/只读策略.

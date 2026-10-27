@@ -10,16 +10,18 @@ namespace ec::sentinel::capture {
 // 本车采集契约: 固定候选接线表, 不包含输出限值、PID 或臆测的机构标定.
 inline constexpr std::uint8_t request_type = 0x30, response_type = 0xb0, schema = 3;
 inline constexpr std::uint8_t page_count = 10;
-inline constexpr std::uint16_t dm_can_id = 1, dm_master_id = 0;
+inline constexpr std::uint16_t dm_can_id = 1, dm_master_id = 0x011; // 候选反馈 ID，待实车确认
+inline constexpr std::uint8_t dm_bus = 2;  // 达妙 pitch 挂在 CAN2
+static_assert(dm_bus == 1 || dm_bus == 2, "DM must be on CAN1 or CAN2");
 inline constexpr std::uint32_t dm_timeout_ms = 100, dm_period_ms = 50;
 enum class Kind : std::uint8_t { c620 = 1, c610, gm6020, dm };
 struct Install { std::uint8_t bus; Kind kind; std::uint16_t rx_id; std::uint8_t node; };
 inline constexpr std::array<Install, 10> installs{{
-    {2, Kind::c620, 0x201, 1}, {2, Kind::c620, 0x202, 2},
-    {2, Kind::c620, 0x203, 3}, {2, Kind::c620, 0x204, 4},
-    {1, Kind::gm6020, 0x20a, 6}, {1, Kind::gm6020, 0x208, 4},
+    {1, Kind::c620, 0x201, 1}, {1, Kind::c620, 0x202, 2},
+    {1, Kind::c620, 0x203, 3}, {1, Kind::c620, 0x204, 4},
+    {1, Kind::gm6020, 0x208, 4}, {2, Kind::gm6020, 0x20a, 6},
     {2, Kind::c620, 0x205, 5}, {2, Kind::c620, 0x206, 6},
-    {2, Kind::c610, 0x207, 7}, {1, Kind::dm, dm_master_id, 1}}};
+    {2, Kind::c610, 0x207, 7}, {dm_bus, Kind::dm, dm_master_id, 1}}};
 struct RegisterSpec { std::uint8_t rid; bool floating; };
 // 只允许读取这些寄存器. p_m 是转子推导的输出轴角, xout 是输出轴编码器角, 均为 rad.
 inline constexpr std::array<RegisterSpec, 12> registers{{

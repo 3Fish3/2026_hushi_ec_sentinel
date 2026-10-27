@@ -32,7 +32,7 @@ void Collector::receive(std::uint8_t bus, const ec::transport::CanFrame& f,
     std::uint32_t ms, std::uint32_t cycles) noexcept {
     if (!f.valid()) { ++diagnostics_.malformed; return; }
     // 参数响应与普通 MIT 状态共用 Master ID. 优先识别参数响应, 不把它解成角度/温度.
-    if (bus == 1 && f.id == dm_master_id && f.size == 8 &&
+    if (bus == dm_bus && f.id == dm_master_id && f.size == 8 &&
         f.data[0] == (dm_can_id & 0xff) && f.data[1] == (dm_can_id >> 8) && f.data[2] == 0x33) {
         const auto index = register_index(f.data[3]);
         if (!index || !pending_ || *index != pending_index_ || ms - requested_at_ >= dm_timeout_ms) {

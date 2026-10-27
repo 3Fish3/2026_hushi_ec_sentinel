@@ -453,17 +453,17 @@ SentinelConfig synthetic_config() noexcept {
         }
         return out;
     };
-    config.dji[0] = slot(Domain::chassis_lf, 2, drivers::DjiMode::c620_current, 1, 19.0f, 1,
+    config.dji[0] = slot(Domain::chassis_lf, 1, drivers::DjiMode::c620_current, 1, 19.0f, 1,
         3.0f, 16384, 50.0f, false);
-    config.dji[1] = slot(Domain::chassis_rf, 2, drivers::DjiMode::c620_current, 2, 19.0f, 1,
+    config.dji[1] = slot(Domain::chassis_rf, 1, drivers::DjiMode::c620_current, 2, 19.0f, 1,
         3.0f, 16384, 50.0f, false);
-    config.dji[2] = slot(Domain::chassis_lb, 2, drivers::DjiMode::c620_current, 3, 19.0f, 1,
+    config.dji[2] = slot(Domain::chassis_lb, 1, drivers::DjiMode::c620_current, 3, 19.0f, 1,
         3.0f, 16384, 50.0f, false);
-    config.dji[3] = slot(Domain::chassis_rb, 2, drivers::DjiMode::c620_current, 4, 19.0f, 1,
+    config.dji[3] = slot(Domain::chassis_rb, 1, drivers::DjiMode::c620_current, 4, 19.0f, 1,
         3.0f, 16384, 50.0f, false);
-    config.dji[4] = slot(Domain::main_yaw, 1, drivers::DjiMode::gm6020_current, 6, 1.0f, -1,
+    config.dji[4] = slot(Domain::main_yaw, 1, drivers::DjiMode::gm6020_current, 4, 1.0f, -1,
         3.0f, 16384, 20.0f, true);
-    config.dji[5] = slot(Domain::fire_yaw, 1, drivers::DjiMode::gm6020_current, 4, 1.0f, 1, 3.0f,
+    config.dji[5] = slot(Domain::fire_yaw, 2, drivers::DjiMode::gm6020_current, 6, 1.0f, 1, 3.0f,
         16384, 20.0f, true);
     config.dji[6] = slot(Domain::friction_left, 2, drivers::DjiMode::c620_current, 5, 19.0f, -1,
         5.0f, 16384, 30.0f, false);
@@ -476,9 +476,9 @@ SentinelConfig synthetic_config() noexcept {
     pitch.domain = Domain::pitch;
     pitch.installed = true;
     pitch.origin = Origin::synthetic;
-    pitch.bus = 1;
+    pitch.bus = 2;
     pitch.can_id = 0x01;
-    pitch.master_id = 0x00;
+    pitch.master_id = 0x011;
     pitch.limits = drivers::DmMitLimits{12.5f, 30.0f, 10.0f};
     pitch.feedback_ttl = Lifetime{20};
     pitch.mit_kp = 20.0f;

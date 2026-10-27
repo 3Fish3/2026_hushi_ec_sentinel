@@ -48,9 +48,9 @@ void Recorder::imu(const drivers::Bmi088Reading& sample, MicroTick now) noexcept
 void Recorder::can(std::uint8_t bus, const transport::CanFrame& frame, MicroTick at, MicroTick now,
     std::uint32_t lost) noexcept {
     // 固定候选安装映射, 不由 CAN ID 猜 C610/C620 比例. 未匹配帧仍由原有 collector 统计.
-    constexpr std::array<std::uint16_t, 10> ids{0x201, 0x202, 0x203, 0x204, 0x20a, 0x208, 0x205, 0x206, 0x207, 0};
+    constexpr std::array<std::uint16_t, 10> ids{0x201, 0x202, 0x203, 0x204, 0x208, 0x20a, 0x205, 0x206, 0x207, 0x011};
     for (std::size_t i = 0; i < ids.size(); ++i) {
-        const auto expected_bus = i == 4 || i == 5 || i == 9 ? 1 : 2;
+        const auto expected_bus = i <= 4 ? 1 : 2;
         if (bus != expected_bus || frame.id != ids[i]) { continue; }
         Record r{Kind::can, static_cast<std::uint8_t>(i), 4, 0, ++can_sequences_[i], at.us, at.us, lost, 0xffffffffu, 0};
         r.data[0] = bus | (static_cast<std::uint32_t>(frame.size) << 8) | (static_cast<std::uint32_t>(frame.id) << 16);

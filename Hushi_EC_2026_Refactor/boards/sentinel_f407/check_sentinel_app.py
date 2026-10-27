@@ -12,12 +12,14 @@ import re
 import struct
 import subprocess
 
-# 部署摘要布局 (board_app_config.hpp 的 DeploymentSummary): 11 个 uint32.
-SUMMARY_FIELDS = ('magic', 'layout', 'kind', 'dji_capacity', 'dm_capacity', 'installed_dji',
-                  'installed_dm', 'synthetic_values', 'unknown_origin_installed',
-                  'harness_dji', 'harness_dm')
+# 部署摘要布局 (board_app_config.hpp 的 DeploymentSummary): 11 个统计 uint32 +
+# 9 个 DJI 槽地址 + 1 个 DM 地址, 共 21 个 uint32.
+SUMMARY_FIELDS = (('magic', 'layout', 'kind', 'dji_capacity', 'dm_capacity', 'installed_dji',
+                   'installed_dm', 'synthetic_values', 'unknown_origin_installed',
+                   'harness_dji', 'harness_dm') +
+                  tuple(f'dji_address_{slot}' for slot in range(9)) + ('dm_address',))
 SUMMARY_MAGIC = 0x45434150
-SUMMARY_LAYOUT = 1
+SUMMARY_LAYOUT = 2
 CONFIG_KIND_REAL_DEPLOYMENT = 2
 
 # 必须存在的 APP 路径符号: 缺任何一个都说明"只编了库/只链了假 sink", 不是 APP 接入.
@@ -132,6 +134,11 @@ def main():
             'Deployment image must reserve nine DJI slots and one DM slot')
     require(summary['harness_dji'] == 9 and summary['harness_dm'] == 1,
             'Deployment image must carry the verified harness list (9 DJI + 1 DM)')
+
+    # 地址级核对: 正式 APP 尚无实车装配, 每槽地址必须全为 0; 出现任何非零地址都说明
+    # 镜像里混进了某个角色的装配信息.
+    require(all(summary[f'dji_address_{slot}'] == 0 for slot in range(9)) and summary['dm_address'] == 0,
+            'Production APP image must not declare any slot bus/device address')
     # 控制任务必须存在且使用静态栈 (不占用 FreeRTOS heap).
     for name in ('appControlStack', 'appControlTaskBuffer'):
         require(find_symbol(entries, name) is not None,

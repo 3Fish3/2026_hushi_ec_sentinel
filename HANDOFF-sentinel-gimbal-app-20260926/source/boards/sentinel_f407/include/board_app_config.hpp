@@ -32,29 +32,28 @@
 #include <cstdint>
 
 namespace ec::sentinel::board {
-// 已确认接线 (来源: 硬件 Checklist 的装机映射, 与 board_observation.hpp 的 dji_mode
-// 一致): CAN1 两颗 GM6020 (反馈 0x208 / 0x20a), CAN2 六颗 C620 (0x201..0x206) 与
-// ID7 的 C610 (0x207). 这里只记录已验证的总线/协议/设备 ID.
-// 实车记录已确认main yaw=CAN1 ID4、fire yaw=CAN1 ID6; CAN2的轮序/方向等仍需冻结.
-// 本表仅描述接线, 不包含执行所需的机械参考和控制参数, 不能当作已完成的部署配置.
-// 四电机裸台架改用的CAN1 M2006 ID3不替代实车CAN2 ID7.
+// 已确认接线 (2026-10-27 实车只读采集与用户接线确认, 与 board_observation.hpp 的 dji_mode
+// 一致): CAN1 四轮 C620 (反馈 0x201..0x204) 与主 yaw GM6020 (反馈 0x208); CAN2 发射 yaw
+// GM6020 (0x20a)、两摩擦轮 C620 (0x205/0x206) 与 ID7 的 C610 (0x207).
+// 这里只记录已验证的总线/协议/设备 ID, 不包含机械参考和控制参数.
+// CAN2 的轮序/方向等仍需冻结; 四电机裸台架改用的CAN1 M2006 ID3不替代实车CAN2 ID7.
 struct HarnessEntry {
     std::uint8_t bus{};
     drivers::DjiMode mode{drivers::DjiMode::c620_current};
     std::uint8_t device_id{};
 };
 inline constexpr std::array<HarnessEntry, 9> known_dji_harness{{
-    {1, drivers::DjiMode::gm6020_current, 4}, // 反馈 0x208
-    {1, drivers::DjiMode::gm6020_current, 6}, // 反馈 0x20a
-    {2, drivers::DjiMode::c620_current, 1},   // 反馈 0x201
-    {2, drivers::DjiMode::c620_current, 2},
-    {2, drivers::DjiMode::c620_current, 3},
-    {2, drivers::DjiMode::c620_current, 4},
-    {2, drivers::DjiMode::c620_current, 5},
-    {2, drivers::DjiMode::c620_current, 6},
-    {2, drivers::DjiMode::c610_current, 7}, // 反馈 0x207
+    {1, drivers::DjiMode::c620_current, 1},    // 反馈 0x201
+    {1, drivers::DjiMode::c620_current, 2},    // 反馈 0x202
+    {1, drivers::DjiMode::c620_current, 3},    // 反馈 0x203
+    {1, drivers::DjiMode::c620_current, 4},    // 反馈 0x204
+    {1, drivers::DjiMode::gm6020_current, 4},  // 反馈 0x208
+    {2, drivers::DjiMode::gm6020_current, 6},  // 反馈 0x20a
+    {2, drivers::DjiMode::c620_current, 5},    // 反馈 0x205
+    {2, drivers::DjiMode::c620_current, 6},    // 反馈 0x206
+    {2, drivers::DjiMode::c610_current, 7},    // 反馈 0x207
 }};
-// 实车记录已读回DM CAN1控制ID1/反馈ID0, MIT量程12.5rad/30rad/s/10N·m.
+// 实车记录已读回DM CAN2控制ID1/反馈ID0x011, MIT量程12.5rad/30rad/s/10N·m.
 // 这里仍只声明接线存在; 协议量程不等于pitch机械行程或可直接部署的控制参数.
 inline constexpr bool known_dm_harness = true;
 
@@ -143,6 +142,7 @@ inline constexpr float app_max_dt_s = 0.005f;
 
 // 部署配置的静态摘要: 固定布局、无指针, 供离线检查脚本从未压缩镜像按符号读取,
 // 核对镜像里不是合成配置、也不含"装配了但来源未知"的槽位.
+inline constexpr std::uint32_t deployment_summary_dji_slots = 9;
 struct DeploymentSummary {
     std::uint32_t magic;
     std::uint32_t layout;
@@ -155,27 +155,43 @@ struct DeploymentSummary {
     std::uint32_t unknown_origin_installed; // 装配但来源未知 (部署用途拒绝)
     std::uint32_t harness_dji;       // 已验证接线条目数
     std::uint32_t harness_dm;
+    // 每槽实际总线/设备 ID: bus | device_id<<8, 0 表示该槽未装配.
+    // 只报装配数量时, "底盘挂错总线"这类镜像照样能通过审计; 地址进摘要才能离线核对.
+    std::uint32_t dji_address[deployment_summary_dji_slots];
+    std::uint32_t dm_address;        // bus | can_id<<8 | master_id<<16
 };
 inline constexpr std::uint32_t deployment_summary_magic = 0x45434150u; // "ECAP"
-inline constexpr std::uint32_t deployment_summary_layout = 1;
+inline constexpr std::uint32_t deployment_summary_layout = 2; // 2: 增补每槽地址表
 
 [[nodiscard]] constexpr DeploymentSummary summarize(const app::SentinelConfig& config) noexcept {
     DeploymentSummary summary{deployment_summary_magic, deployment_summary_layout,
         static_cast<std::uint32_t>(config.kind),
         static_cast<std::uint32_t>(config.dji.size()),
         static_cast<std::uint32_t>(config.dm.size()), 0, 0, 0, 0,
-        static_cast<std::uint32_t>(known_dji_harness.size()), known_dm_harness ? 1u : 0u};
+        static_cast<std::uint32_t>(known_dji_harness.size()), known_dm_harness ? 1u : 0u,
+        {}, 0}; // 地址表与 DM 地址先清零, 下面按实际装配填写
+    std::uint32_t slot_index = 0;
     for (const auto& slot : config.dji) {
+        const std::uint32_t index = slot_index++;
         if (!slot.installed) { continue; }
         ++summary.installed_dji;
         if (slot.origin == app::Origin::synthetic) { ++summary.synthetic_values; }
         if (slot.origin == app::Origin::unspecified) { ++summary.unknown_origin_installed; }
+        if (index < deployment_summary_dji_slots) {
+            summary.dji_address[index] = static_cast<std::uint32_t>(slot.bus) |
+                (static_cast<std::uint32_t>(slot.device_id) << 8);
+        }
     }
     for (const auto& slot : config.dm) {
         if (!slot.installed) { continue; }
         ++summary.installed_dm;
         if (slot.origin == app::Origin::synthetic) { ++summary.synthetic_values; }
         if (slot.origin == app::Origin::unspecified) { ++summary.unknown_origin_installed; }
+    }
+    if (!config.dm.empty() && config.dm[0].installed) {
+        summary.dm_address = static_cast<std::uint32_t>(config.dm[0].bus) |
+            (static_cast<std::uint32_t>(config.dm[0].can_id.value_or(0)) << 8) |
+            (static_cast<std::uint32_t>(config.dm[0].master_id.value_or(0)) << 16);
     }
     return summary;
 }

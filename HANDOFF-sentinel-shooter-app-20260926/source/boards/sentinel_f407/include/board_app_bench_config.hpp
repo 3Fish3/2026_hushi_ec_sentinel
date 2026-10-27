@@ -27,9 +27,9 @@ namespace ec::sentinel::board {
         app::JointGeometryConfig{app::Domain::main_yaw, 0.0f, {}, {}, true};
     return config;
 }
-// 用户确认全部CAN1: GM6020 ID4、M3508 ID2、M2006 ID3、DM控制ID1/反馈ID0.
+// 用户确认全部CAN1: GM6020 ID4、M3508 ID2、M2006 ID3; 达妙 pitch 在 CAN2 控制ID1/反馈ID0x011.
 // M2006不用ID7: 0x1FF电流组会被同总线GM6020识别为电压命令.
-// M3508不用ID1: 0x201低8位会命中DM控制ID1, 不能靠MCU收帧过滤解决.
+// M3508不用ID1: 0x201低8位会命中达妙控制ID1, 不能靠MCU收帧过滤解决; pitch 改挂 CAN2 后不同总线不再相撞.
 [[nodiscard]] constexpr app::SentinelConfig four_motor_bench_config(app::SentinelConfig config) noexcept {
     config = single_gm6020_bench_config(config);
     config.independent_motor_bench = true;
@@ -58,7 +58,7 @@ namespace ec::sentinel::board {
     // 19/36仅按原装减速箱与旧实现换算, 不包含外部传动; 安装后人工核对方向与速度.
     auto& dm = config.dm[0];
     dm.domain = app::Domain::pitch; dm.installed = true; dm.origin = app::Origin::reference_converted;
-    dm.bus = 1; dm.can_id = 1; dm.master_id = 0;
+    dm.bus = 2; dm.can_id = 1; dm.master_id = 0x011;
     dm.limits = drivers::DmMitLimits{12.5f, 30.0f, 10.0f};
     dm.feedback_ttl = Lifetime{100};
     // 旧有效MIT编码Kp=35、Kd=0换回物理增益, 不是直接将35当物理Kp; 本裸机待调.

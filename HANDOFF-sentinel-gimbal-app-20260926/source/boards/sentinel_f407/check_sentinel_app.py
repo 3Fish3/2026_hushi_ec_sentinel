@@ -12,12 +12,14 @@ import re
 import struct
 import subprocess
 
-# 部署摘要布局 (board_app_config.hpp 的 DeploymentSummary): 11 个 uint32.
-SUMMARY_FIELDS = ('magic', 'layout', 'kind', 'dji_capacity', 'dm_capacity', 'installed_dji',
-                  'installed_dm', 'synthetic_values', 'unknown_origin_installed',
-                  'harness_dji', 'harness_dm')
+# 部署摘要布局 (board_app_config.hpp 的 DeploymentSummary): 11 个统计 uint32 +
+# 9 个 DJI 槽地址 + 1 个 DM 地址, 共 21 个 uint32.
+SUMMARY_FIELDS = (('magic', 'layout', 'kind', 'dji_capacity', 'dm_capacity', 'installed_dji',
+                   'installed_dm', 'synthetic_values', 'unknown_origin_installed',
+                   'harness_dji', 'harness_dm') +
+                  tuple(f'dji_address_{slot}' for slot in range(9)) + ('dm_address',))
 SUMMARY_MAGIC = 0x45434150
-SUMMARY_LAYOUT = 1
+SUMMARY_LAYOUT = 2
 CONFIG_KIND_REAL_DEPLOYMENT = 2
 
 # 必须存在的 APP 路径符号: 缺任何一个都说明"只编了库/只链了假 sink", 不是 APP 接入.
@@ -152,6 +154,41 @@ def main():
             'Deployment image must reserve nine DJI slots and one DM slot')
     require(summary['harness_dji'] == 9 and summary['harness_dm'] == 1,
             'Deployment image must carry the verified harness list (9 DJI + 1 DM)')
+
+    # 地址级核对: 凡只看装配数量时, "底盘挂错总线"或"yaw/pitch 挂反总线"的镜像照样能通过;
+    # 这里按符号读出的每槽总线与设备 ID 逐项比对, 与主机测试里的地址契约互为镜像级证据.
+    def encode_dji(bus, device_id):
+        return (bus & 0xFF) | ((device_id & 0xFF) << 8)
+
+    # 实车 2026-10-27 只读采集确认: 底盘四轮与主 yaw 在 CAN1, 发射 yaw/两摩擦轮/拨弹在 CAN2.
+    vehicle_slots = ((1, 1), (1, 2), (1, 3), (1, 4), (1, 4), (2, 6), (2, 5), (2, 6), (2, 7))
+    if commissioning:
+        expected_dji, expected_dm = dict(enumerate(vehicle_slots)), (2, 0x01, 0x011)
+    elif args.four_motor_bench:
+        expected_dji, expected_dm = {4: (1, 4), 6: (1, 2), 8: (1, 3)}, (2, 0x01, 0x011)
+    elif args.gm6020_bench:
+        expected_dji, expected_dm = {4: (1, 4)}, None
+    else:
+        expected_dji, expected_dm = {}, None
+    for slot in range(9):
+        want = expected_dji.get(slot)
+        got = summary[f'dji_address_{slot}']
+        if want is None:
+            require(got == 0,
+                    f'DJI slot {slot} must stay unassembled in this role, image reports {got:#06x}')
+        else:
+            require(got == encode_dji(*want),
+                    f'DJI slot {slot} address mismatch: image {got:#06x} != expected '
+                    f'{encode_dji(*want):#06x} (bus {want[0]}, device {want[1]})')
+    if expected_dm is None:
+        require(summary['dm_address'] == 0,
+                'DM slot must stay unassembled in this role')
+    else:
+        dm_bus, dm_can_id, dm_master_id = expected_dm
+        want_dm = (dm_bus & 0xFF) | ((dm_can_id & 0xFF) << 8) | ((dm_master_id & 0xFFFF) << 16)
+        require(summary['dm_address'] == want_dm,
+                f'DM address mismatch: image {summary["dm_address"]:#08x} != expected {want_dm:#08x} '
+                f'(bus {dm_bus}, can_id {dm_can_id:#04x}, master_id {dm_master_id:#05x})')
     # 控制任务必须存在且使用静态栈 (不占用 FreeRTOS heap).
     for name in ('appControlStack', 'appControlTaskBuffer'):
         require(find_symbol(entries, name) is not None,

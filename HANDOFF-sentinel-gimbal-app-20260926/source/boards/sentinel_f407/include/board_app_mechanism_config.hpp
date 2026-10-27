@@ -5,7 +5,7 @@
 namespace ec::sentinel::board {
 [[nodiscard]] constexpr app::SentinelConfig mechanism_commissioning_config(
     app::SentinelConfig config, bool gimbal) noexcept {
-    constexpr std::array<std::uint8_t, 9> buses{{2,2,2,2,1,1,2,2,2}};
+    constexpr std::array<std::uint8_t, 9> buses{{1,1,1,1,1,2,2,2,2}};
     constexpr std::array<std::uint8_t, 9> ids{{1,2,3,4,4,6,5,6,7}};
     for (std::size_t i=0; i<config.dji.size(); ++i) {
         auto& slot=config.dji[i];
@@ -17,7 +17,7 @@ namespace ec::sentinel::board {
     }
     auto& pitch=config.dm[0];
     pitch.domain=app::Domain::pitch; pitch.installed=true; pitch.origin=app::Origin::user_confirmed;
-    pitch.bus=1; pitch.can_id=1; pitch.master_id=0;
+    pitch.bus=2; pitch.can_id=1; pitch.master_id=0x011;
     pitch.limits=drivers::DmMitLimits{12.5f,30.0f,10.0f}; pitch.feedback_ttl=Lifetime{100};
     if (gimbal) {
         for (std::size_t i=4; i<=5; ++i) {

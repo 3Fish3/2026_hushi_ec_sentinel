@@ -23,17 +23,20 @@ cap::Collector collector{};
 std::uint32_t queued{}, high_water{}, dropped{}, overrun[2]{}, errors[2]{};
 std::uint32_t max_age{}, max_gap{}, max_cost{}, stack_words{};
 // 只提供固定参数/状态读取能力; 不借用可接任意控制帧的 HalCanTx.
+static_assert(cap::dm_bus == 1 || cap::dm_bus == 2, "DM bus must be CAN1 or CAN2");
+CAN_HandleTypeDef* dm_can_handle() noexcept { return cap::dm_bus == 1 ? &hcan1 : &hcan2; }
 class ReadOnlyTx final : public ec::transport::CanTx {
 public:
     ec::transport::SendResult try_send(const ec::transport::CanFrame& frame) noexcept override {
         using ec::transport::SendResult;
         if (!cap::allowed_read(frame)) { return SendResult::invalid; }
-        if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0) { return SendResult::busy; }
+        auto* handle = dm_can_handle();
+        if (HAL_CAN_GetTxMailboxesFreeLevel(handle) == 0) { return SendResult::busy; }
         CAN_TxHeaderTypeDef header{};
         header.StdId = 0x7ff; header.IDE = CAN_ID_STD; header.RTR = CAN_RTR_DATA; header.DLC = 4;
         auto data = frame.data;
         std::uint32_t mailbox{};
-        const auto result = HAL_CAN_AddTxMessage(&hcan1, &header, data.data(), &mailbox);
+        const auto result = HAL_CAN_AddTxMessage(handle, &header, data.data(), &mailbox);
         return result == HAL_OK ? SendResult::accepted : result == HAL_BUSY ? SendResult::busy : SendResult::error;
     }
 };
