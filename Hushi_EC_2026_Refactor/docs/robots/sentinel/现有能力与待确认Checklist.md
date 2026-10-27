@@ -48,17 +48,17 @@ tags:
 
 ### 代码中可以直接提取的配置
 
-下表是当前构造路径的映射, 不是已逐个核对实车铭牌与接线的结果. `reverse` 是旧驱动对参考值取反的开关, 不直接等同于关节坐标系正方向.
+下表是当前构造路径的映射. 总线与设备 ID 已于 2026-10-27 经实车只读采集核对 (底盘四轮与主 yaw 在 CAN1, 发射 yaw/摩擦/拨弹/达妙 pitch 在 CAN2, 达妙反馈 ID `0x011`); `reverse` 仍是旧驱动的参考取反开关, 尚未逐个实测, 不直接等同于关节坐标系正方向.
 
 | 机构/对象 | 型号与总线 | 设备 ID / 接收 CAN ID | 发送 CAN ID | reverse | 来源 |
 |---|---|---|---|---|---|
-| 左前 `motor_lf` | M3508 / CAN2 | 1 / `0x201` | `0x200` 分组 | false | `app/chassis/chassis.hpp`, `DJIMotor` 构造与发送表 |
-| 右前 `motor_rf` | M3508 / CAN2 | 2 / `0x202` | `0x200` 分组 | false | 同上 |
-| 左后 `motor_lb` | M3508 / CAN2 | 3 / `0x203` | `0x200` 分组 | false | 同上 |
-| 右后 `motor_rb` | M3508 / CAN2 | 4 / `0x204` | `0x200` 分组 | false | 同上 |
-| 主 yaw 候选 `motor_yaw_` | GM6020 / CAN1 | 6 / `0x20A` | `0x2FE` 分组 | true | `app/gimbal/gimbal.hpp:39`, `DJIMotor` |
-| 发射 yaw 候选 `motor_yaw2_` | GM6020 / CAN1 | 4 / `0x208` | `0x1FE` 分组 | false | `app/gimbal/gimbal.hpp:76`, `DJIMotor` |
-| pitch `motor_pitch_` | DM_J4310 / CAN1 | TX `0x001`, RX `0x000` | `0x001`, MIT 编码路径 | false | `app/gimbal/gimbal.hpp:120`, `DMMotor` |
+| 左前 `motor_lf` | M3508 / CAN1 | 1 / `0x201` | `0x200` 分组 | false | `app/chassis/chassis.hpp`, `DJIMotor` 构造与发送表 |
+| 右前 `motor_rf` | M3508 / CAN1 | 2 / `0x202` | `0x200` 分组 | false | 同上 |
+| 左后 `motor_lb` | M3508 / CAN1 | 3 / `0x203` | `0x200` 分组 | false | 同上 |
+| 右后 `motor_rb` | M3508 / CAN1 | 4 / `0x204` | `0x200` 分组 | false | 同上 |
+| 主 yaw `main_yaw` | GM6020 / CAN1 | 4 / `0x208` | `0x1FE` 分组 | false | `app/gimbal/gimbal.hpp:76`, `DJIMotor` |
+| 发射 yaw `fire_yaw` | GM6020 / CAN2 | 6 / `0x20A` | `0x2FE` 分组 | true | `app/gimbal/gimbal.hpp:39`, `DJIMotor` |
+| pitch `motor_pitch_` | DM_J4310 / CAN2 | TX `0x001`, RX `0x011` | `0x001`, MIT 编码路径 | false | `app/gimbal/gimbal.hpp:120`, `DMMotor` |
 | 左摩擦轮 `motor_l_rub` | M3508 / CAN2 | 5 / `0x205` | `0x1FF` 分组 | true | `app/shoot/shoot.hpp:31`, `DJIMotor` |
 | 右摩擦轮 `motor_r_rub` | M3508 / CAN2 | 6 / `0x206` | `0x1FF` 分组 | false | `app/shoot/shoot.hpp:47`, `DJIMotor` |
 | 拨弹 `motor_pb` | M2006 / CAN2 | 7 / `0x207` | `0x1FF` 分组 | true | `app/shoot/shoot.hpp:63`, `DJIMotor` |
