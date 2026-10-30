@@ -42,10 +42,10 @@ PitchIdentificationRecipe default_recipe(std::uint32_t run_id = 1) {
     return {run_id, 0.04f, 10000, 10000, 2, 10000};
 }
 
-SentinelConfig make_test_config(bool available = false) {
+SentinelConfig make_test_config(bool available = false, bool keep_dji = false) {
     auto config = synthetic_config();
     config.independent_motor_bench = true;
-    for (auto& motor : config.dji) { motor.installed = false; }
+    if (!keep_dji) { for (auto& motor : config.dji) { motor.installed = false; } }
     config.serial.reset();
     config.timing.target_ttl = {100};
     config.dm[0].bus = 2;
@@ -100,8 +100,8 @@ struct TestRig {
     Tick now{1};
     std::uint32_t command_seq{};
 
-    explicit TestRig(bool available = false, Lifetime link_ttl = {})
-        : config(make_test_config(available)),
+    explicit TestRig(bool available = false, Lifetime link_ttl = {}, bool keep_dji = false)
+        : config(make_test_config(available, keep_dji)),
           app(config, ConfigAudience::offline_test, StartupPolicy::maintenance_only),
           exec(config, ConfigAudience::offline_test, bus1, bus2),
           perception(config, ConfigAudience::offline_test),
@@ -227,6 +227,32 @@ struct TestRig {
         const auto req = make_pitch_req(seq, op, c_epoch, r_epoch, recipe);
         return handle_raw(req);
     }
+
+    // 带域字节的原始报文 (用于 main_yaw=4 / fire_yaw=5 电流辨识分派验证).
+    std::vector<std::uint8_t> send_pitch_domain(std::uint32_t seq, std::uint8_t op,
+        std::uint32_t c_epoch, std::uint32_t r_epoch, std::uint8_t domain,
+        const PitchIdentificationRecipe* recipe = nullptr) {
+        const std::size_t base = op == 1 ? 43 : 19;
+        std::vector<std::uint8_t> req(base + 1);
+        PayloadWriter w{req};
+        w.u8(protocol_version);
+        w.u8(static_cast<std::uint8_t>(MessageType::pitch_identification));
+        w.u32(session.session_id());
+        w.u32(seq);
+        w.u8(op);
+        w.u32(c_epoch);
+        w.u32(r_epoch);
+        if (op == 1 && recipe != nullptr) {
+            w.u32(recipe->run_id);
+            w.f32(recipe->amplitude_nm);
+            w.u32(recipe->half_period_us);
+            w.u32(recipe->baseline_us);
+            w.u32(recipe->cycles);
+            w.u32(recipe->final_hold_us);
+        }
+        req[base] = domain;
+        return handle_raw(req);
+    }
 };
 
 void test_available_disabled_default() {
@@ -275,8 +301,8 @@ void test_request_lengths_and_invalid_op() {
     CHECK(reply.size() == 12);
     CHECK(static_cast<ResultCode>(reply[10]) == ResultCode::bad_length);
 
-    // Query with extra trailing bytes (20 bytes != 19)
-    std::vector<std::uint8_t> long_query(20, 0);
+    // Query with two extra trailing bytes (21 bytes) 是非法长度: 19(基础)/20(+domain) 才合法.
+    std::vector<std::uint8_t> long_query(21, 0);
     PayloadWriter wq{long_query};
     wq.u8(protocol_version);
     wq.u8(static_cast<std::uint8_t>(MessageType::pitch_identification));
@@ -299,6 +325,7 @@ void test_request_lengths_and_invalid_op() {
     // Start with 44 bytes (extra byte)
     const auto r = default_recipe(1);
     auto long_start = rig.make_pitch_req(rig.next_seq(), 1, rig.app.config_epoch(), rig.app.reference_epoch(), &r);
+    long_start.push_back(0);
     long_start.push_back(0);
     reply = rig.handle_raw(long_start);
     CHECK(reply.size() == 12);
@@ -522,6 +549,53 @@ void test_session_replacement_and_expiry() {
 }
 } // namespace
 
+void test_dji_domain_dispatch() {
+    // 保留 DJI 槽安装, 使 main_yaw(4)/fire_yaw(5) 成为可识别域; 无 policy => 激励不可用.
+    TestRig rig(false, Lifetime{}, true);
+    static_cast<void>(rig.hello());
+    static_cast<void>(rig.authorize(true, Source::maintenance, rig.next_seq()));
+    CHECK(!rig.exec.pitch_identification_available());
+
+    // main_yaw(4) query: 报文长度 27, 接受但 available=0.
+    auto q_main = rig.send_pitch_domain(rig.next_seq(), 0, rig.app.config_epoch(),
+        rig.app.reference_epoch(), 4);
+    CHECK(q_main.size() == 27);
+    auto s_main = decode_status_payload(q_main);
+    CHECK(s_main.result == ResultCode::accepted);
+    CHECK(!s_main.available);
+    CHECK(s_main.state == PitchIdentificationState::idle);
+
+    // fire_yaw(5) query 同样接受, 不可用.
+    auto q_fire = rig.send_pitch_domain(rig.next_seq(), 0, rig.app.config_epoch(),
+        rig.app.reference_epoch(), 5);
+    CHECK(q_fire.size() == 27);
+    CHECK(decode_status_payload(q_fire).result == ResultCode::accepted);
+    CHECK(!decode_status_payload(q_fire).available);
+
+    // 未知域(如 chassis_lf=0) query 必须被拒 (invalid_value), 因为不是可辨识轴.
+    auto q_bad = rig.send_pitch_domain(rig.next_seq(), 0, rig.app.config_epoch(),
+        rig.app.reference_epoch(), 0);
+    CHECK(decode_status_payload(q_bad).result == ResultCode::invalid_value);
+
+    // main_yaw(4) start: 无 policy => rejected (绝不推进任何激励).
+    PitchIdentificationRecipe recipe{9, 0.5f, 10000, 10000, 2, 10000};
+    auto start_main = rig.send_pitch_domain(rig.next_seq(), 1, rig.app.config_epoch(),
+        rig.app.reference_epoch(), 4, &recipe);
+    CHECK(decode_status_payload(start_main).result == ResultCode::rejected);
+
+    // 报文长度 +2 (缺省/多余) 必须 bad_length.
+    std::vector<std::uint8_t> bad(19 + 2, 0);
+    PayloadWriter wb{bad};
+    wb.u8(protocol_version);
+    wb.u8(static_cast<std::uint8_t>(MessageType::pitch_identification));
+    wb.u32(rig.session.session_id());
+    wb.u32(rig.next_seq());
+    wb.u8(0); wb.u32(rig.app.config_epoch()); wb.u32(rig.app.reference_epoch());
+    auto rep_bad = rig.handle_raw(bad);
+    CHECK(decode_status_payload(rep_bad).result == ResultCode::bad_length ||
+          decode_status_payload(rep_bad).result != ResultCode::accepted);
+}
+
 int main() {
     test_available_disabled_default();
     test_request_lengths_and_invalid_op();
@@ -529,6 +603,7 @@ int main() {
     test_synthesised_start_success();
     test_idempotence_and_intervening_traffic();
     test_session_replacement_and_expiry();
+    test_dji_domain_dispatch();
 
     if (failures != 0) {
         std::fprintf(stderr, "FAILED: %d contract assertion(s) failed\n", failures);

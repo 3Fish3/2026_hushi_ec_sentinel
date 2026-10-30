@@ -111,6 +111,15 @@ SentinelExecutor::SentinelExecutor(const SentinelConfig& config, ConfigAudience 
         config.kind == ConfigKind::real_deployment && pitch_deployment_opt_in_valid(config);
     pitch_identification_available_ = config.pitch_identification &&
         config.pitch_identification->valid() && (offline_experiment || deployment_experiment);
+    // 每 DJI 槽激励能力: 有合法 policy, 且处于离线夹具或显式 opt-in 的实车部署.
+    for (std::size_t i = 0; i < dji_slot_count; ++i) {
+        const bool opted = config.dji_identification[i] && config.dji_identification[i]->valid() &&
+            config.dji_identification[i]->deployment_opt_in;
+        const bool avail = config.dji_identification[i] && config.dji_identification[i]->valid() &&
+            (offline_experiment || (deployment_experiment && opted));
+        dji_identification_available_[i] = avail;
+        if (avail) { dji_identification_[i].emplace(); }
+    }
     // 只把真正安装的槽放进布局检查: 合法部分装配不能被"未安装"占位项判为非法.
     std::array<drivers::DjiDeviceConfig, dji_slot_count> layout{};
     std::size_t layout_size = 0;
@@ -671,6 +680,93 @@ bool SentinelExecutor::reset_pitch_identification(Tick now, const SentinelApp& a
     return pitch_identification_.reset(!app.target(Domain::pitch), disabled);
 }
 
+std::optional<std::size_t> SentinelExecutor::dji_slot_for(Domain domain) const noexcept {
+    for (std::size_t i = 0; i < dji_slot_count; ++i) {
+        if (config_.dji[i].installed && config_.dji[i].domain == domain) { return i; }
+    }
+    return std::nullopt;
+}
+
+DjiIdentificationEvidence SentinelExecutor::dji_identification_evidence(
+    std::size_t slot, Tick now, MicroTick at, const SentinelApp& app) const noexcept {
+    DjiIdentificationEvidence e{};
+    if (slot >= dji_slot_count) { return e; }
+    const auto& slotcfg = config_.dji[slot];
+    const auto domain = slotcfg.domain;
+    const auto target = app.target(domain);
+    const auto& execution = app.snapshot().executions[domain_index(domain)];
+    e.maintenance = app.authority().holds() && app.authority().source() == Source::maintenance;
+    e.grant = app.authority().token().value_or(Grant{});
+    e.executing = execution.execute && target && target->mode == control::ControlMode::position &&
+        fresh(now, target->accepted_at, target->ttl);
+    e.isolated = true;
+    for (std::size_t i = 0; i < domain_count; ++i) {
+        if (i != domain_index(domain) && app.snapshot().executions[i].execute) { e.isolated = false; }
+    }
+    e.config_epoch = app.config_epoch(); e.reference_epoch = app.reference_epoch();
+    e.target_rad = target ? target->value : std::numeric_limits<float>::quiet_NaN();
+    const auto fb = joint_feedback(domain, now);
+    e.position_rad = fb.position_rad.value; e.velocity_rad_s = fb.velocity_rad_s.value;
+    e.feedback_valid = fb.position_rad.validity == Validity::valid &&
+        fb.velocity_rad_s.validity == Validity::valid;
+    const auto received = feedback_times_[domain_index(domain)];
+    e.feedback_age_us = received ? at.us - received->us : 0xffffffffu;
+    const auto& ax_opt = axes_[domain_index(domain)];
+    e.enabled = ax_opt.has_value() && ax_opt->enabled();
+    e.current_limit_a = slotcfg.current_limit_a.value_or(0.0f);
+    // 环路自身上一周期实际请求的电流 (安培): 归一化输出(设备满量程分数) x 满量程安培.
+    const auto out = outputs_[slot];
+    if (dji_devices_[slot]) {
+        const auto full = drivers::dji_current_amp_full_scale(dji_devices_[slot]->config().mode);
+        e.loop_current_a = (out && full) ? out->normalized * *full : 0.0f;
+    }
+    return e;
+}
+
+bool SentinelExecutor::dji_capture_healthy(std::uint32_t run, MicroTick at) const noexcept {
+    if (pitch_recorder_ == nullptr) { return true; }
+    return pitch_recorder_->pitch_stream_healthy(run, at);
+}
+
+bool SentinelExecutor::start_dji_identification(std::size_t slot, DjiIdentificationRecipe recipe,
+    Tick now, const SentinelApp& app) noexcept {
+    if (!assembled_ || slot >= dji_slot_count || !dji_identification_available_[slot] ||
+        !config_.dji_identification[slot] || !dji_identification_[slot]) { return false; }
+    const auto at = clock_ ? clock_() : MicroTick{now.ms*1000u};
+    const auto& slotcfg = config_.dji[slot];
+    const auto domain = slotcfg.domain;
+    const auto& joint = config_.joints[joint_index(domain)];
+    const auto& policy = *config_.dji_identification[slot];
+    if (!joint.min_rad || !joint.max_rad || policy.min_rad < *joint.min_rad ||
+        policy.max_rad > *joint.max_rad) { return false; }
+    if (policy.require_capture) {
+        if (pitch_recorder_ == nullptr || !pitch_recorder_->pitch_stream_ready(
+            recipe.run_id, recipe.duration_us() + 2000u, at)) { return false; }
+        // 采集流必须正在记录本轴, 否则激励的响应不会被如实采到.
+        if (pitch_recorder_->stream_domain() != static_cast<int>(domain_index(domain))) { return false; }
+    }
+    const auto ok = dji_identification_[slot]->start(
+        policy, recipe, dji_identification_evidence(slot, now, at, app), at);
+    if (ok) { dji_identification_run_[slot] = recipe.run_id; }
+    return ok;
+}
+
+void SentinelExecutor::cancel_dji_identification(std::size_t slot) noexcept {
+    if (slot < dji_slot_count && dji_identification_[slot]) {
+        dji_identification_[slot]->trip(DjiIdentificationFault::cancelled);
+    }
+}
+
+bool SentinelExecutor::reset_dji_identification(std::size_t slot, Tick now, const SentinelApp& app) noexcept {
+    if (slot >= dji_slot_count || !dji_identification_[slot]) { return false; }
+    const auto domain = config_.dji[slot].domain;
+    const auto& ax = axes_[domain_index(domain)];
+    const auto fb = joint_feedback(domain, now);
+    const bool disabled = fb.position_rad.validity == Validity::valid &&
+        (!ax.has_value() || !ax->enabled());
+    return dji_identification_[slot]->reset(!app.target(domain), disabled);
+}
+
 bool SentinelExecutor::send_pitch_frame(const transport::CanFrame& frame) noexcept {
     const auto result = bus_for(config_.dm[0].bus).try_send(frame);
     const bool accepted = result == transport::SendResult::accepted;
@@ -851,6 +947,21 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
         }
     }
     if (pitch_identification_.latched()) { rejected_[domain_index(Domain::pitch)] = true; }
+    // DJI 电流方波辨识: 采集门槛先于波形推进; 每槽独立, 失败即锁存并撤该轴输出.
+    for (std::size_t slot = 0; slot < dji_slot_count; ++slot) {
+        if (!dji_identification_[slot] || !dji_identification_[slot]->active()) { continue; }
+        if (!dji_capture_healthy(dji_identification_run_[slot], at)) {
+            dji_identification_[slot]->trip(DjiIdentificationFault::capture);
+        } else if (!std::isfinite(dt_s) || dt_s <= 0.0f) {
+            dji_identification_[slot]->trip(DjiIdentificationFault::timing);
+        } else {
+            static_cast<void>(dji_identification_[slot]->tick(
+                dji_identification_evidence(slot, now, at, app), at));
+        }
+        if (dji_identification_[slot]->latched()) {
+            rejected_[domain_index(config_.dji[slot].domain)] = true;
+        }
+    }
     const bool bad_dt = !std::isfinite(dt_s) || dt_s <= 0.0f;
     std::array<bool, group_capacity> force{};
     for (std::size_t i = 0; i < domain_count; ++i) {
@@ -1009,6 +1120,19 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
                 main_yaw_stats_.mechanical_limit = (position >= *range.max_rad && output > 0) ||
                     (position <= *range.min_rad && output < 0);
                 if (main_yaw_stats_.mechanical_limit) { output = 0; }
+            }
+            // 系统辨识激励: 把环路归一化输出换算成安培, 叠加方波电流, 再按轴电流上限硬限幅
+            // (归一化回设备满量程). 叠加后指令电流永不超过配置的 current_limit.
+            dji_last_excitation_a_[slot] = 0.0f;
+            if (dji_identification_[slot] && dji_identification_[slot]->active() && dji_devices_[slot]) {
+                const auto full = drivers::dji_current_amp_full_scale(dji_devices_[slot]->config().mode);
+                const float limit = config_.dji[slot].current_limit_a.value_or(0.0f);
+                if (full && *full > 0.0f && limit > 0.0f) {
+                    const float loop_a = output * *full;
+                    const float clamped = std::min(limit, std::max(-limit, loop_a + dji_identification_[slot]->requested_a()));
+                    output = clamped / *full;
+                    dji_last_excitation_a_[slot] = clamped - loop_a;
+                }
             }
             outputs_[slot] = drivers::DjiOutput{output, now};
         } else {

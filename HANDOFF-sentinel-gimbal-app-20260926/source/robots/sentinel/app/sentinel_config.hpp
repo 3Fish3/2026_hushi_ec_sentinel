@@ -11,6 +11,7 @@
 #include "ec/motion/omni_kinematics.hpp"
 #include "sentinel_types.hpp"
 #include "sentinel_pitch_identification.hpp"
+#include "sentinel_dji_identification.hpp"
 #include "sentinel_runtime.hpp"
 #include "sentinel_kinematics.hpp"
 #include <array>
@@ -136,6 +137,8 @@ struct SentinelConfig {
     Origin serial_origin{Origin::unspecified};
     // No deployed role enables this. First-stage experimental policy is offline-fixture only.
     std::optional<PitchIdentificationPolicy> pitch_identification{};
+    // 每 DJI 槽的系统辨识策略: 与槽一一对应, 默认全空 (无激励能力).
+    std::array<std::optional<DjiIdentificationPolicy>, dji_slot_count> dji_identification{};
 };
 
 enum class ConfigIssue : std::uint8_t {

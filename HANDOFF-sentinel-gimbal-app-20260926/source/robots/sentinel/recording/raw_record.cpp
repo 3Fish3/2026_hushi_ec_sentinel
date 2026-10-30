@@ -174,7 +174,9 @@ void Recorder::stream_consume(std::size_t count) noexcept {
 }
 bool Recorder::pitch_stream_healthy(std::uint32_t run, MicroTick now) const noexcept {
     if (!continuous_ || state_ != State::recording) { return false; }
-    if (profile_ != Profile::control || selected_domain_ != 6) { return false; }
+    // control 域 4/5/6 = main_yaw/fire_yaw/pitch, 三者都支持连续激励采集.
+    if (profile_ != Profile::control ||
+        (selected_domain_ != 4 && selected_domain_ != 5 && selected_domain_ != 6)) { return false; }
     // run 精确匹配: 不匹配意味着已被新采集替换, 或已被停止/结束.
     if (!run || run != run_) { return false; }
     // 累计丢条或队列已满都表示数据链已不完整, 不允许再对外声称健康.

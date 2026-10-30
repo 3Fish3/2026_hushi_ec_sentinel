@@ -256,10 +256,11 @@ class AsyncSentinelClient:
 
     def pitch_identification(self, op, *, run_id=0, amplitude_nm=0.0, half_period_us=0,
                              baseline_us=0, cycles=0, final_hold_us=0,
-                             config_epoch=None, reference_epoch=None):
+                             config_epoch=None, reference_epoch=None, domain=None):
         """复用既有 v3 编解码; query 是只读请求, start/cancel/reset 是变更.
 
         不发送任意电流、不写增益、不改 TTL; 代次缺省取当前会话快照.
+        domain=None 时保持 pitch(6) 历史报文; 传 4/5 时对 main_yaw/fire_yaw 做电流方波辨识.
         """
         op_code = wire.PITCH_IDENT_OPS.index(op) if isinstance(op, str) else int(op)
         snap = self.snapshot()
@@ -268,6 +269,8 @@ class AsyncSentinelClient:
                   'reference_epoch': snap['reference_epoch'] if reference_epoch is None else reference_epoch,
                   'run_id': run_id, 'amplitude_nm': amplitude_nm, 'half_period_us': half_period_us,
                   'baseline_us': baseline_us, 'cycles': cycles, 'final_hold_us': final_hold_us}
+        if domain is not None:
+            values['domain'] = int(domain)
         return self._post(wire.PITCH_IDENTIFICATION, values, op_code != 0)
 
     # ------------------------------------------------------------------

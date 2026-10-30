@@ -8,6 +8,7 @@
 #include "ec/transport/can.hpp"
 #include "sentinel_app.hpp"
 #include "sentinel_config.hpp"
+#include "sentinel_dji_identification.hpp"
 #include "sentinel_params.hpp"
 #include "raw_record.hpp"
 #include <array>
@@ -138,6 +139,19 @@ public:
     [[nodiscard]] bool pitch_enable_requested() const noexcept { return pitch_enable_requested_; }
     [[nodiscard]] bool pitch_disable_requested() const noexcept { return pitch_disable_requested_; }
     [[nodiscard]] bool pitch_enable_confirmed() const noexcept { return pitch_enable_confirmed_; }
+    // ---- DJI 轴 (C610/C620/GM6020 电流) 方波系统辨识: 与 pitch 同一安全模型, 作用在电流域 ----
+    // 按域查已安装 DJI 槽 (main_yaw/fire_yaw 等), 供协议层把域号映射到槽.
+    [[nodiscard]] std::optional<std::size_t> dji_slot_for(Domain domain) const noexcept;
+    [[nodiscard]] bool dji_identification_available(std::size_t dji_slot) const noexcept {
+        return dji_slot < dji_slot_count && dji_identification_available_[dji_slot]; }
+    [[nodiscard]] bool start_dji_identification(std::size_t dji_slot, DjiIdentificationRecipe recipe,
+        Tick now, const SentinelApp& app) noexcept;
+    void cancel_dji_identification(std::size_t dji_slot) noexcept;
+    [[nodiscard]] bool reset_dji_identification(std::size_t dji_slot, Tick now, const SentinelApp& app) noexcept;
+    [[nodiscard]] const DjiIdentification* dji_identification(std::size_t dji_slot) const noexcept {
+        return dji_slot < dji_slot_count && dji_identification_[dji_slot].has_value() ?
+            &*dji_identification_[dji_slot] : nullptr; }
+    // 连续采集流健康门槛 (run 绑定 + 无丢条), 供辨识推进使用.
 
 private:
     struct TxGroupSlot {
@@ -166,6 +180,8 @@ private:
     [[nodiscard]] std::optional<float> branch_for(
         Domain domain, float requested_rad, Tick now) noexcept;
     [[nodiscard]] PitchIdentificationEvidence pitch_identification_evidence(Tick now, MicroTick at, const SentinelApp& app) const noexcept;
+    [[nodiscard]] DjiIdentificationEvidence dji_identification_evidence(std::size_t slot, Tick now, MicroTick at, const SentinelApp& app) const noexcept;
+    [[nodiscard]] bool dji_capture_healthy(std::uint32_t run, MicroTick at) const noexcept;
     // 采集门槛是否成立: 未要求采集时恒真; 要求时必须是同 run 的活动连续 control 域 6 流.
     [[nodiscard]] bool pitch_capture_healthy(MicroTick at) const noexcept;
     void step_pitch(Tick now, const SentinelApp& app, bool force_stop = false) noexcept;
@@ -214,5 +230,10 @@ private:
     std::optional<MicroTick> pitch_last_mit_attempt_at_{};
     std::optional<MicroTick> pitch_last_mit_submitted_at_{};
     drivers::DjiGroupStatus pitch_last_mit_status_{drivers::DjiGroupStatus::not_sent};
+    // DJI 系统辨识: 每槽可选激励器/可用标志/绑定 run, 以及最近一次注入的真实激励电流.
+    std::array<std::optional<DjiIdentification>, dji_slot_count> dji_identification_{};
+    std::array<bool, dji_slot_count> dji_identification_available_{};
+    std::array<std::uint32_t, dji_slot_count> dji_identification_run_{};
+    std::array<float, dji_slot_count> dji_last_excitation_a_{};
 };
 } // 命名空间 ec::sentinel::app

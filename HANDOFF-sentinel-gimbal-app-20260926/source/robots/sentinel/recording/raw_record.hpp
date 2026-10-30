@@ -92,6 +92,7 @@ public:
     void stream_consume(std::size_t count) noexcept;
     [[nodiscard]] bool fast_dm() const noexcept { return state_ == State::recording && profile_ == Profile::rotation; }
     [[nodiscard]] int control_domain() const noexcept { return state_ == State::recording && profile_ == Profile::control ? selected_domain_ : -1; }
+    [[nodiscard]] int stream_domain() const noexcept { return selected_domain_; }
     // Pitch 连续流就绪/健康查询. 纯只读: 不推进状态机, 不消费队列, 不产生任何副作用.
     // healthy: 活动中的连续 control 域 6 + 精确非零 run + 无丢条 + 32 位半回绕窗口内未过截止.
     // ready: healthy 全部条件之外, 剩余时长还必须 >= required_us.

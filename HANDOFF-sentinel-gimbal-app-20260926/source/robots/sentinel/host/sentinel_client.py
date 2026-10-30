@@ -289,20 +289,24 @@ def encode_pitch_identification(
     baseline_us: int = 0,
     cycles: int = 0,
     final_hold_us: int = 0,
+    domain: int | None = None,
 ) -> bytes:
+    """domain=None 保持历史 pitch(6) 报文长度; 指定 4/5/6 时在末尾追加一个域字节.
+    fire_yaw/main_yaw 走 DJI 电流激励, amplitude_nm 字段语义变为安培."""
     op_code = PITCH_IDENT_OPS.index(op) if isinstance(op, str) else int(op)
+    tail = b"" if domain is None else struct.pack("<B", int(domain))
     if op_code == 1:
         body = struct.pack(
             "<IIBIIIfIIII",
             session, sequence, op_code, int(config_epoch), int(reference_epoch),
             int(run_id), float(amplitude_nm), int(half_period_us), int(baseline_us),
             int(cycles), int(final_hold_us),
-        )
+        ) + tail
     else:
         body = struct.pack(
             "<IIBII",
             session, sequence, op_code, int(config_epoch), int(reference_epoch),
-        )
+        ) + tail
     return _pack(PITCH_IDENTIFICATION, body)
 
 
@@ -828,6 +832,7 @@ class SentinelClient:
         baseline_us: int = 0,
         cycles: int = 0,
         final_hold_us: int = 0,
+        domain: int | None = None,
     ) -> dict:
         info = self.hello_info
         c_epoch = info.get("config_epoch", 0) if config_epoch is None else config_epoch
@@ -835,7 +840,7 @@ class SentinelClient:
         sequence = self._next_sequence()
         payload = encode_pitch_identification(
             self.session, sequence, op, c_epoch, r_epoch,
-            run_id, amplitude_nm, half_period_us, baseline_us, cycles, final_hold_us,
+            run_id, amplitude_nm, half_period_us, baseline_us, cycles, final_hold_us, domain,
         )
         return self._request(
             payload, PITCH_IDENTIFICATION, PITCH_IDENTIFICATION_STATUS,

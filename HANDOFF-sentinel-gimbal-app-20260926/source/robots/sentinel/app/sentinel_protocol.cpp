@@ -571,12 +571,16 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         return ack(MessageType::ack, session, seq, ResultCode::invalid_value, 0, response);
     }
     const bool is_start = (op == 1);
-    const std::size_t expected_len = is_start ? 43 : 19;
-    if (payload.size() != expected_len) {
+    const std::size_t base_len = is_start ? 43 : 19;
+    // 可选末字节 domain: 缺省保持历史行为, 恒为 pitch(6). 允许扩展到 fire_yaw/main_yaw 电流辨识.
+    const bool has_domain = (payload.size() == base_len + 1);
+    if (!has_domain && payload.size() != base_len) {
         return ack(MessageType::ack, session, seq, ResultCode::bad_length, 0, response);
     }
+    std::uint8_t target_domain = 6;
 
     PitchIdentificationRecipe recipe{};
+    DjiIdentificationRecipe dji_recipe{};
     if (is_start) {
         recipe.run_id = r.u32();
         recipe.amplitude_nm = r.f32();
@@ -585,9 +589,23 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         recipe.cycles = r.u32();
         recipe.final_hold_us = r.u32();
     }
+    if (has_domain) { target_domain = r.u8(); }
     if (!r.exact()) {
         return ack(MessageType::ack, session, seq, ResultCode::bad_length, 0, response);
     }
+    const bool is_pitch = target_domain == 0xff || target_domain == static_cast<std::uint8_t>(Domain::pitch);
+    const std::optional<std::size_t> dji_slot = (executor_ && !is_pitch)
+        ? executor_->dji_slot_for(static_cast<Domain>(target_domain)) : std::nullopt;
+    const bool known_domain = is_pitch || (dji_slot.has_value() &&
+        (static_cast<Domain>(target_domain) == Domain::main_yaw ||
+         static_cast<Domain>(target_domain) == Domain::fire_yaw));
+    // fire_yaw/main_yaw 走 DJI 电流激励; 振幅字段沿用同一 payload 的 amplitude_nm 位置但语义为安培.
+    dji_recipe.run_id = recipe.run_id;
+    dji_recipe.amplitude_a = recipe.amplitude_nm;
+    dji_recipe.half_period_us = recipe.half_period_us;
+    dji_recipe.baseline_us = recipe.baseline_us;
+    dji_recipe.cycles = recipe.cycles;
+    dji_recipe.final_hold_us = recipe.final_hold_us;
 
     const bool non_idempotent = (op != 0);
     const auto check = check_session(session, seq, non_idempotent, now);
@@ -603,36 +621,46 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         w.u32(seq);
         w.u8(static_cast<std::uint8_t>(result));
         w.u8(reason);
-        const bool avail = executor_ && executor_->pitch_identification_available();
+        const bool avail = executor_ && (is_pitch ? executor_->pitch_identification_available()
+            : (dji_slot && executor_->dji_identification_available(*dji_slot)));
         w.u8(avail ? 1 : 0);
-        if (executor_) {
+        bool wrote = false;
+        if (executor_ && is_pitch) {
             const auto& ident = executor_->pitch_identification();
             w.u8(static_cast<std::uint8_t>(ident.state()));
             w.u8(static_cast<std::uint8_t>(ident.fault()));
             w.u32(ident.run_id());
             w.f32(ident.requested_nm());
             w.f32(ident.encoded_nm());
-        } else {
-            w.u8(0);
-            w.u8(0);
-            w.u32(0);
-            w.f32(0.0f);
-            w.f32(0.0f);
+            wrote = true;
+        } else if (executor_ && dji_slot && executor_->dji_identification(*dji_slot)) {
+            const auto& ident = *executor_->dji_identification(*dji_slot);
+            w.u8(static_cast<std::uint8_t>(ident.state()));
+            w.u8(static_cast<std::uint8_t>(ident.fault()));
+            w.u32(ident.run_id());
+            w.f32(ident.requested_a());   // 电流域: 复用 requested/encoded 字段表达安培
+            w.f32(ident.requested_a());
+            wrote = true;
+        }
+        if (!wrote) {
+            w.u8(0); w.u8(0); w.u32(0); w.f32(0.0f); w.f32(0.0f);
         }
         return w.overflow ? 0 : w.size();
     };
 
     if (op == 0) { // query
+        if (!known_domain) { return make_response(ResultCode::invalid_value); }
         accept_activity(now);
         return make_response(ResultCode::accepted);
     }
 
     if (op == 2) { // cancel
-        if (role_source_ != Source::maintenance) {
-            return make_response(ResultCode::not_permitted);
+        if (role_source_ != Source::maintenance || !known_domain) {
+            return make_response(role_source_ != Source::maintenance ? ResultCode::not_permitted : ResultCode::invalid_value);
         }
         if (executor_) {
-            executor_->cancel_pitch_identification();
+            if (is_pitch) { executor_->cancel_pitch_identification(); }
+            else if (dji_slot) { executor_->cancel_dji_identification(*dji_slot); }
         }
         ++accepted_commands_;
         accept_activity(now);
@@ -651,10 +679,17 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         if (!std::isfinite(recipe.amplitude_nm)) {
             return make_response(ResultCode::invalid_value);
         }
-        if (executor_ == nullptr || !executor_->pitch_identification_available()) {
-            return make_response(ResultCode::rejected);
+        if (executor_ == nullptr) { return make_response(ResultCode::rejected); }
+        bool started = false;
+        if (is_pitch) {
+            if (!executor_->pitch_identification_available()) { return make_response(ResultCode::rejected); }
+            started = executor_->start_pitch_identification(recipe, now, *app_);
+        } else if (dji_slot) {
+            if (!executor_->dji_identification_available(*dji_slot)) { return make_response(ResultCode::rejected); }
+            started = executor_->start_dji_identification(*dji_slot, dji_recipe, now, *app_);
+        } else {
+            return make_response(ResultCode::invalid_value);
         }
-        const bool started = executor_->start_pitch_identification(recipe, now, *app_);
         if (!started) {
             return make_response(ResultCode::rejected);
         }
@@ -667,7 +702,9 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         if (executor_ == nullptr) {
             return make_response(ResultCode::rejected);
         }
-        const bool reset_ok = executor_->reset_pitch_identification(now, *app_);
+        const bool reset_ok = is_pitch
+            ? executor_->reset_pitch_identification(now, *app_)
+            : (dji_slot ? executor_->reset_dji_identification(*dji_slot, now, *app_) : false);
         if (!reset_ok) {
             return make_response(ResultCode::rejected);
         }

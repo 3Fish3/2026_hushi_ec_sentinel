@@ -95,6 +95,11 @@ if(EC_BUILD_TESTS)
     target_compile_options(ec_pitch_identification_protocol_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
     add_test(NAME sentinel_pitch_identification_protocol_contracts COMMAND ec_pitch_identification_protocol_tests)
     set_tests_properties(sentinel_pitch_identification_protocol_contracts PROPERTIES TIMEOUT 30)
+    add_executable(ec_dji_identification_tests tests/dji_identification_tests.cpp)
+    target_link_libraries(ec_dji_identification_tests PRIVATE ec_sentinel_app)
+    target_compile_options(ec_dji_identification_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+    add_test(NAME sentinel_dji_excitation_contracts COMMAND ec_dji_identification_tests)
+    set_tests_properties(sentinel_dji_excitation_contracts PROPERTIES TIMEOUT 30)
     add_executable(ec_pitch_stream_link_tests tests/pitch_stream_link_tests.cpp)
     target_link_libraries(ec_pitch_stream_link_tests PRIVATE ec_sentinel_app)
     target_compile_options(ec_pitch_stream_link_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
@@ -302,7 +307,7 @@ if(EC_BUILD_TESTS)
             ENVIRONMENT "SENTINEL_PITCH_BACKEND=$<TARGET_FILE:ec_sentinel_app_host>;PYTHONDONTWRITEBYTECODE=1")
         add_test(NAME sentinel_pitch_identification_contracts COMMAND "${Python3_EXECUTABLE}" -m unittest discover
             -s "${CMAKE_CURRENT_SOURCE_DIR}/tests/pitch_identification" -p "test_*.py")
-        set_tests_properties(sentinel_pitch_identification_contracts PROPERTIES TIMEOUT 60
+        set_tests_properties(sentinel_pitch_identification_contracts PROPERTIES TIMEOUT 180
             ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/robots/sentinel/host;PYTHONDONTWRITEBYTECODE=1;SENTINEL_PITCH_BACKEND=$<TARGET_FILE:ec_sentinel_app_host>;SENTINEL_PITCH_STREAM_BACKEND=$<TARGET_FILE:ec_capture_stream_tests>")
         add_test(NAME motor_bench_client_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/motor_bench_tests.py" "$<TARGET_FILE:ec_gm6020_bench_tests>")
@@ -382,7 +387,7 @@ endif()
 if(EC_BUILD_TESTS)
     # 注册清单自检: 期望的测试名一个都不能少 (漏注册会让"通过"看起来依然完整).
     # 放在文件末尾, 因此必须等示例测试也注册完成后再核对.
-    set(_ec_expected_tests sentinel_gimbal_remote_validation_contracts sentinel_pitch_excitation_contracts sentinel_pitch_identification_protocol_contracts
+    set(_ec_expected_tests sentinel_gimbal_remote_validation_contracts sentinel_pitch_excitation_contracts sentinel_pitch_identification_protocol_contracts sentinel_dji_excitation_contracts
         sentinel_pitch_stream_link_contracts sentinel_capture_contracts sentinel_capture_stream_contracts core_contracts control_contracts axis_contracts dm_contracts
         session_authority_contracts sentinel_app_config_contracts
         sentinel_app_authority_contracts sentinel_app_execution_contracts
