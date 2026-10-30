@@ -1301,6 +1301,63 @@ void diagnostics_contracts() {
     CHECK(r.ok());}
 } // 命名空间
 
+
+// 操作限幅: 主机下发的pitch目标只允许落在command带内, 越界整包拒绝, 机械止点保持不变.
+void command_band_clamps_targets() {
+    auto config = synthetic_config();
+    auto& pitch = config.joints[2];
+    pitch.command_min_rad = -0.132f;
+    pitch.command_max_rad = 0.235f;
+    const float mech_lo = *pitch.min_rad;
+    const float mech_hi = *pitch.max_rad;
+    Rig rig(Lifetime{}, config);
+    static_cast<void>(rig.hello());
+    CHECK(result_of(rig.authorize(true, Source::host, rig.next_seq())) == ResultCode::accepted);
+    rig.cycle();
+
+    // 目标越过操作带上界(但在机械止点内): 整包拒绝, 不是静默夹到机械上界.
+    const Point high{Domain::pitch, control::ControlMode::position, 0.40f};
+    CHECK(result_of(rig.targets(rig.next_seq(), rig.app.config_epoch(),
+              rig.app.reference_epoch(), {&high, 1})) == ResultCode::invalid_value);
+    rig.cycle();
+    const auto hi_target = rig.app.target(Domain::pitch);
+    CHECK(!hi_target || std::fabs(hi_target->value - 0.40f) > 1e-4f);
+
+    // 目标越过操作带下界: 同样拒绝.
+    const Point low{Domain::pitch, control::ControlMode::position, -0.30f};
+    CHECK(result_of(rig.targets(rig.next_seq(), rig.app.config_epoch(),
+              rig.app.reference_epoch(), {&low, 1})) == ResultCode::invalid_value);
+
+    // 带内目标: 原样接受.
+    const Point inside{Domain::pitch, control::ControlMode::position, 0.10f};
+    CHECK(result_of(rig.targets(rig.next_seq(), rig.app.config_epoch(),
+              rig.app.reference_epoch(), {&inside, 1})) == ResultCode::accepted);
+    rig.cycle();
+    const auto in_target = rig.app.target(Domain::pitch);
+    CHECK(in_target.has_value());
+    if (in_target) { CHECK(std::fabs(in_target->value - 0.10f) < 1e-4f); }
+
+    // 机械止点参数不被操作带改写.
+    CHECK(std::fabs(*rig.app.joint_geometry(Domain::pitch).min_rad - mech_lo) < 1e-6f);
+    CHECK(std::fabs(*rig.app.joint_geometry(Domain::pitch).max_rad - mech_hi) < 1e-6f);
+}
+
+// 操作带必须落在机械止点内且min<max, 否则配置判为不完整.
+void command_band_validation() {
+    auto bad = synthetic_config();
+    bad.joints[2].command_min_rad = 0.40f;  // 高于机械上界0.5? -> 实际高于机械上界
+    bad.joints[2].command_max_rad = 0.60f;  // 0.60 超出机械上界0.5, 整带非法
+    const auto bad_report = validate(bad, ConfigAudience::offline_test);
+    CHECK(bad_report.domains[domain_index(Domain::pitch)] != ConfigState::complete);
+    CHECK(!bad_report.complete);
+
+    auto ok = synthetic_config();
+    ok.joints[2].command_min_rad = -0.10f;
+    ok.joints[2].command_max_rad = 0.20f;
+    const auto ok_report = validate(ok, ConfigAudience::offline_test);
+    CHECK(ok_report.domains[domain_index(Domain::pitch)] == ConfigState::complete);
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--golden") {
         // 由主机后端打印, 这里只保证协议契约自身可运行.
@@ -1324,6 +1381,8 @@ int main(int argc, char** argv) {
     mutation_stream_and_frames_contracts();
     reply_mux_contracts();
     diagnostics_contracts();
+    command_band_clamps_targets();
+    command_band_validation();
     if (failures != 0) {
         std::cout << failures << " contract(s) failed\n";
         return 1;

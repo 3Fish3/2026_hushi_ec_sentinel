@@ -1,0 +1,5 @@
+{
+  "venvPath": "..",
+  "venv": ".venv",
+  "extraPaths": ["source/robots/sentinel/host", "source/boards/sentinel_f407/tools"]
+}

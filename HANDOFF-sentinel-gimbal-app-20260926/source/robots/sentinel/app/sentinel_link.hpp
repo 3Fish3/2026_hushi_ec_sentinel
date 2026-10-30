@@ -14,7 +14,9 @@ public:
         const auto lane = classify(request);
         auto& slot = slots_[lane];
         if (slot.size) { ++replaced_[lane]; }
-        slot.size = transport::encode_uart_frame(declared_response_type(payload), request.sequence, payload, slot.wire);
+        // Raw streaming has a v1 payload, NOT a v3 declared-response header.
+        const auto response_type = request.type == 0x32 ? std::uint8_t{0xb2} : declared_response_type(payload);
+        slot.size = transport::encode_uart_frame(response_type, request.sequence, payload, slot.wire);
         return slot.size != 0;
     }
     template<class Send> bool service(Tick now, Send&& send) noexcept {
@@ -28,6 +30,10 @@ public:
         }
         return false;
     }
+    [[nodiscard]] bool pending() const noexcept {
+        for (const auto& slot : slots_) { if (slot.size) { return true; } }
+        return false;
+    }
     [[nodiscard]] std::array<std::uint32_t, 10> diagnostics() const noexcept {
         std::array<std::uint32_t, 10> out{};
         for (std::size_t i=0; i<4; ++i) { out[i]=sent_[i]; out[4+i]=replaced_[i]; out[9]+=slots_[i].size ? 1u : 0u; }
@@ -35,8 +41,10 @@ public:
     }
 private:
     static std::size_t classify(const transport::UartFrame& request) noexcept {
+        if (request.type == 0x32) { return 0; } // raw stream transaction ACK
         switch (static_cast<MessageType>(request.type)) {
         case MessageType::hello: case MessageType::authorize: case MessageType::align: case MessageType::param_write:
+        case MessageType::pitch_identification:
             return 0;
         case MessageType::targets: case MessageType::permit: return 1;
         case MessageType::status: return request.size == 11 && request.payload[10] == 0 ? 2 : 3;

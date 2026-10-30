@@ -155,7 +155,8 @@ void touch_devices_and_kinematics() noexcept {
 extern "C" void ec_board_app_control(std::uint32_t now_ms) { (void)now_ms; }
 extern "C" void ec_board_app_commit(std::uint32_t now_ms) { (void)now_ms; }
 
-extern "C" int main() {
+int main() {  // C++ 标准不允许 main 使用 C 链接规格, GCC 16 的 -Wpedantic 会拒绝
+
     touch_monitor();
     touch_control();
     touch_estimation_and_input();

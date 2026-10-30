@@ -420,7 +420,10 @@ class AppPage:
                     if not page.closing.is_set():
                         super().invoke(action)
 
-            self.view = EmbeddedConsole(backend=source / 'build/sentinel-app-host/ec_sentinel_app_host',
+            backend = source / 'build/host-tests/ec_sentinel_app_host'
+            if not backend.is_file():
+                backend = source / 'build/sentinel-app-host/ec_sentinel_app_host'
+            self.view = EmbeddedConsole(backend=backend,
                                         log_dir=root / 'build/sentinel-console-logs', mechanism=mechanism)
             if fixed_mechanism:
                 dpg.configure_item('part', enabled=False)
@@ -440,6 +443,10 @@ class AppPage:
 
     def prepare_close(self):
         self.closing.set()
+        for session in self.sessions:
+            assistant = getattr(session, 'assistance', None)
+            if assistant is not None:
+                assistant.request_stop()
 
     def close(self):
         self.prepare_close()
@@ -467,6 +474,9 @@ class AppPage:
         for session in self.sessions:
             try:
                 session.peer.close()  # Thread/transport close only; no AUTHORIZE/PERMIT.
+                assistant = getattr(session, 'assistance', None)
+                if assistant is not None:
+                    assistant.wait(timeout=5.0)
             except Exception as error:
                 errors.append(str(error))
         for transport in self.transports:
@@ -480,6 +490,9 @@ class AppPage:
 
     def released(self):
         if self.pending and not self.pending.done():
+            return False
+        if any(getattr(session, 'assistance', None) is not None and session.assistance.active
+               for session in self.sessions):
             return False
         if any(session.peer._thread.is_alive() for session in self.sessions):
             return False

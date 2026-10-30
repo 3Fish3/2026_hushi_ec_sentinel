@@ -9,6 +9,7 @@ import secrets
 import struct
 import sys
 import time
+from typing import Any
 
 TOOLS = Path(__file__).resolve().parents[3] / 'boards/sentinel_f407/tools'
 sys.path.insert(0, str(TOOLS))
@@ -31,8 +32,11 @@ def decode_record(raw):
     version, kind, stream, flags, seq, source, sampled, arrived, lost, error, run = struct.unpack_from('<4B7I', raw)
     if version != VERSION or kind not in KINDS or flags & ~7:
         raise ValueError('原始记录版本/类型/标志不匹配')
-    row = dict(kind=KINDS[kind], stream=stream, flags=flags, sequence=seq, source_sequence=source,
-               sampled_us=sampled, arrived_us=arrived, lost=lost, error_us=None if error == 0xffffffff else error, run=run)
+    row: dict[str, Any] = {
+        'kind': KINDS[kind], 'stream': stream, 'flags': flags, 'sequence': seq,
+        'source_sequence': source, 'sampled_us': sampled, 'arrived_us': arrived,
+        'lost': lost, 'error_us': None if error == 0xffffffff else error, 'run': run,
+    }
     if kind == 4:
         info = struct.unpack_from('<I', raw, 32)[0]
         row.update(bus=info & 255, dlc=(info >> 8) & 255, can_id=info >> 16, data=raw[36:44].hex())
@@ -46,6 +50,30 @@ def decode_record(raw):
             frames = {0: 'joint', 1: 'local_inertial', 2: 'odom'}
             row['requested_frame'] = frames.get((row['state_bits'] >> 25) & 3, 'unknown')
             row['adopted_frame'] = frames.get((row['state_bits'] >> 27) & 3, 'unknown')
+            if stream == 6:
+                # 域 6 专用于 Pitch 达妙 DM 关节.
+                # 6 个 float 物理量依次为:
+                # requested joint rad, adopted joint rad, measured joint rad,
+                # measured velocity rad/s, encoded MIT feedforward Nm (无指令尝试时为 NaN sentinel), dt.
+                # 严禁将 values[4] 标注为归一化电流!
+                v = row['values']
+                row['pitch_requested_rad'] = v[0]
+                row['pitch_adopted_rad'] = v[1]
+                row['pitch_measured_rad'] = v[2]
+                row['pitch_measured_velocity_rad_s'] = v[3]
+                row['pitch_feedforward_torque_nm'] = v[4]
+                row['pitch_dt_s'] = v[5]
+                row['units'] = {
+                    'pitch_requested_rad': 'rad',
+                    'pitch_adopted_rad': 'rad',
+                    'pitch_measured_rad': 'rad',
+                    'pitch_measured_velocity_rad_s': 'rad/s',
+                    'pitch_feedforward_torque_nm': 'N*m',
+                    'pitch_dt_s': 's',
+                }
+                # word6 状态字额外解析: bit29 激励激活, bit30 锁存
+                row['excitation_active'] = bool(row['state_bits'] & (1 << 29))
+                row['latched'] = bool(row['state_bits'] & (1 << 30))
     return row
 
 
@@ -69,7 +97,10 @@ def load(path):
         size = struct.unpack('<I', n)[0]
         if size > 1048576:
             raise ValueError('元数据长度超限')
-        metadata = json.loads(file.read(size))
+        try:
+            metadata = json.loads(file.read(size))
+        except Exception as e:
+            raise ValueError(f'元数据解析失败: {e}') from e
         if metadata.get('layout_id') != LAYOUT:
             raise ValueError('原始采样布局不匹配')
         blob = file.read()
@@ -99,8 +130,8 @@ def decode_reply(payload):
         raise ValueError('原始短窗响应布局不匹配')
     if error:
         raise ValueError(f'原始短窗请求被拒绝: {error}')
-    return dict(op=op, state=state, run=run, profile=profile, total=total, start_us=start, end_us=end,
-                lost=lost, layout_id=layout, capacity=capacity), [payload[i:i+SIZE] for i in range(32, len(payload), SIZE)]
+    return {'op': op, 'state': state, 'run': run, 'profile': profile, 'total': total, 'start_us': start, 'end_us': end,
+            'lost': lost, 'layout_id': layout, 'capacity': capacity}, [payload[i:i+SIZE] for i in range(32, len(payload), SIZE)]
 
 
 class RawClient:
@@ -156,6 +187,20 @@ class RawClient:
         return status, records
 
 
+def export_csv(input_path, output_path):
+    metadata, rows = load(input_path)
+    with Path(output_path).open('x', newline='', encoding='utf-8') as file:
+        fields = ['kind', 'stream', 't_s', 'arrival_s', 'sequence', 'source_sequence', 'lost', 'error_us', 'gap',
+                  'data', 'values', 'requested_frame', 'adopted_frame', 'state_bits', 'send_result',
+                  'pitch_requested_rad', 'pitch_adopted_rad', 'pitch_measured_rad',
+                  'pitch_measured_velocity_rad_s', 'pitch_feedforward_torque_nm', 'pitch_dt_s',
+                  'excitation_active', 'latched']
+        writer = csv.DictWriter(file, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(rows)
+    return len(rows), metadata.get('run')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -164,7 +209,8 @@ def main():
     acquire.add_argument('--baud', type=int, default=115200)
     acquire.add_argument('--profile', choices=PROFILES, default='stationary')
     acquire.add_argument('--duration-ms', type=int, default=200)
-    acquire.add_argument('--domain', type=int, choices=(0, 1, 2, 3, 4, 5, 7, 8, 9), default=4, help='control 的 DJI 轨迹域编号')
+    acquire.add_argument('--domain', type=int, choices=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), default=4,
+                         help='control 轨迹域编号: 0-3 底盘轮, 4 主云台 Yaw (DJI), 5 发射云台 Yaw (DJI), 6 Pitch 达妙 (DM), 7-8 摩擦轮 (DJI), 9 拨弹 (DJI)')
     acquire.add_argument('--metadata', type=Path, help='固件/配置身份及工况标签 JSON, 未知项保留 null')
     acquire.add_argument('--output', type=Path, required=True)
     export = sub.add_parser('export')
@@ -175,7 +221,12 @@ def main():
         import serial
         if not 0 < args.duration_ms <= 2000:
             parser.error('duration-ms 范围 1..2000, 缓存满会提前冻结')
-        metadata = json.loads(args.metadata.read_text(encoding='utf-8')) if args.metadata else {}
+        metadata = {}
+        if args.metadata:
+            try:
+                metadata = json.loads(args.metadata.read_text(encoding='utf-8'))
+            except Exception as e:
+                parser.error(f'无法解析元数据 JSON 文件: {e}')
         with serial.Serial(args.port, args.baud, timeout=0.02) as port:
             client = RawClient(port)
             identity = client.identity()
@@ -184,19 +235,14 @@ def main():
         metadata.update(status, schema=VERSION, timebase='TIM5_us32', units={'gyro': 'rad/s', 'accel': 'm/s2', 'temperature': 'degC'},
                         axes='BMI088 sensor S (unrotated, bias not removed)', firmware=metadata.get('firmware'),
                         configuration=metadata.get('configuration'), device_identity=identity, window_requested_us=args.duration_ms*1000,
-                        imu=dict(gyro_odr_hz=2000, gyro_bw_hz=230, accel_odr_hz=800, accel_range_g=6,
-                                 gyro_range_deg_s=2000, gyro_fifo='last of at most 4, other frames counted',
-                                 accel_filter='normal', synchronized=False), control_domain=args.domain)
+                        imu={'gyro_odr_hz': 2000, 'gyro_bw_hz': 230, 'accel_odr_hz': 800, 'accel_range_g': 6,
+                             'gyro_range_deg_s': 2000, 'gyro_fifo': 'last of at most 4, other frames counted',
+                             'accel_filter': 'normal', 'synchronized': False}, control_domain=args.domain)
         save(args.output, metadata, records)
         print(json.dumps(status, ensure_ascii=False))
     else:
-        metadata, rows = load(args.input)
-        with args.output.open('x', newline='', encoding='utf-8') as file:
-            fields = ['kind', 'stream', 't_s', 'arrival_s', 'sequence', 'source_sequence', 'lost', 'error_us', 'gap', 'data', 'values', 'requested_frame', 'adopted_frame', 'state_bits', 'send_result']
-            writer = csv.DictWriter(file, fieldnames=fields, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f'{len(rows)} records, run={metadata["run"]}; CSV 是派生数据, 保留原始文件')
+        count, run = export_csv(args.input, args.output)
+        print(f'{count} records, run={run}; CSV 是派生数据, 保留原始文件')
 
 
 if __name__ == '__main__':

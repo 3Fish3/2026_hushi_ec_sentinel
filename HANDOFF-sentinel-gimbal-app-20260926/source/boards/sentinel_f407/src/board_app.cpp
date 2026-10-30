@@ -24,6 +24,7 @@
 #include "sentinel_protocol.hpp"
 #include "sentinel_telemetry.hpp"
 #include "sentinel_link.hpp"
+#include "sentinel_pitch_stream_link.hpp"
 #include "can.h"
 #include <array>
 #include <optional>
@@ -41,6 +42,7 @@ std::optional<SentinelPerception> perception{};
 std::optional<ParamStore> params{};
 std::optional<SentinelHostSession> session{};
 std::optional<SentinelCycle> cycle{};
+std::optional<PitchStreamLink> pitch_stream{};
 #if EC_APP_GM6020_BENCH || EC_APP_FOUR_MOTOR_BENCH
 BenchEncoderVelocity bench_velocity{};
 #endif
@@ -78,8 +80,10 @@ std::uint32_t current_cycle_ms{};
 void handle_request(const transport::UartFrame& frame) noexcept {
     session->set_frame_rejects(decoder.rejected());
     session->set_tx_diagnostics(replies.diagnostics());
-    const auto size = session->handle({frame.payload.data(), frame.size},
-        Tick{current_cycle_ms}, response_payload);
+    const auto size = frame.type == PitchStreamLink::request_type
+        ? pitch_stream->request(frame, response_payload, MicroTick{ec_board_micros()},
+            application->authority().holds() && application->authority().source() == Source::maintenance)
+        : session->handle({frame.payload.data(), frame.size}, Tick{current_cycle_ms}, response_payload);
     if (size == 0) { return; }
     if (!replies.enqueue(frame, {response_payload.data(), size})) { ++link_dropped; }
 }
@@ -166,6 +170,13 @@ void ec_app_init() noexcept {
     static_assert(app::dji_slot_count == EC_APP_DJI_SLOT_COUNT, "观测视图 DJI 槽数与应用槽数必须一致");
     static_assert(app::dm_slot_count == EC_APP_DM_SLOT_COUNT, "观测视图 DM 槽数与应用槽数必须一致");
     const auto config = board::deployment_config();
+    const volatile auto* pitch_summary = &::ec_pitch_identification_summary;
+    if (pitch_summary->magic != 0x50494431u || pitch_summary->layout != 1u ||
+        pitch_summary->enabled != (config.pitch_identification ? 1u : 0u) ||
+        (pitch_summary->enabled && !pitch_summary->require_capture)) {
+        ec_s1_event(EC_S1_APP_CONFIG, 0);
+        return; // Fail initialization rather than run with a mismatched opt-in descriptor.
+    }
     // 部署摘要与运行时配置同源: 经 volatile 指针读, 使 Release 下引用不被常量折叠,
     // 符号因此留在镜像里供离线检查核对 (脚本按符号从未压缩镜像读取同一份摘要).
     const volatile auto* summary = &::ec_app_deployment_summary;
@@ -179,6 +190,8 @@ void ec_app_init() noexcept {
     bus2.emplace(hcan2);
     executor.emplace(config, ConfigAudience::deployment, *bus1, *bus2,
         []() noexcept { return MicroTick{ec_board_micros()}; });
+    executor->bind_pitch_recorder(&ec_raw_recorder());
+    pitch_stream.emplace(ec_raw_recorder());
     perception.emplace(config, ConfigAudience::deployment);
     params.emplace(config);
     // 会话链路时限来自部署配置: 漏传会让构造默认的无效时限把老化变成"永不失效".
@@ -227,9 +240,17 @@ void ec_app_control_tick() noexcept {
     ec_board_poll_uart1();
     // 4. 应用周期 (assembly_step 调本文件定义的强钩子: 先控制后提交).
     assembly_step(now_ms);
-    static_cast<void>(replies.service(now, [](std::span<const std::uint8_t> wire) {
+    const bool replied = replies.service(now, [](std::span<const std::uint8_t> wire) {
         return ec_board_uart1_try_send(wire.data(), wire.size()) != 0;
-    }));
+    });
+    // One bounded frame attempt per cycle, after all business ACKs/status.
+    // Never wait for DMA, and never consume records on a busy UART.
+    if (!replied && !replies.pending()) {
+        static_cast<void>(pitch_stream->service(MicroTick{ec_board_micros()},
+            [](std::span<const std::uint8_t> wire) {
+                return ec_board_uart1_try_send(wire.data(), wire.size()) != 0;
+            }));
+    }
     // 5. 100 Hz 发布监控注册表与应用观测, 不在每个 1 ms 周期复制整表.
     if (++publish_counter % app_publish_period_cycles == 0) {
         publish_observation(now);
@@ -273,9 +294,9 @@ void ec_app_route(std::uint8_t bus, const transport::CanFrame& frame, Tick at, M
     }
 #endif
 #if EC_APP_GIMBAL_COMMISSIONING
-    if (bus == 1 && (frame.id == 0x208 || frame.id == 0x20a) && frame.size == 8) {
+    if (const auto slot = board::gimbal_velocity_slot(bus, frame.id, frame.size)) {
         const auto encoder = static_cast<std::uint16_t>((static_cast<unsigned>(frame.data[0]) << 8) | frame.data[1]);
-        if (encoder < 8192) { gimbal_velocities[frame.id == 0x208 ? 0 : 1].receive(encoder, at, at_us); }
+        if (encoder < 8192) { gimbal_velocities[*slot].receive(encoder, at, at_us); }
     }
 #endif
     ec_raw_can(bus, frame, at_us, g_ec_io.can.rx_dropped);

@@ -10,6 +10,7 @@
 #include "ec/drivers/dm_device.hpp"
 #include "ec/motion/omni_kinematics.hpp"
 #include "sentinel_types.hpp"
+#include "sentinel_pitch_identification.hpp"
 #include "sentinel_runtime.hpp"
 #include "sentinel_kinematics.hpp"
 #include <array>
@@ -72,6 +73,9 @@ struct DmSlot {
     Lifetime feedback_ttl{};
     std::optional<float> mit_kp{};
     std::optional<float> mit_kd{};
+    // 重力前馈力矩[N·m]: 常驻叠加到MIT的ff通道, 抵消负载自重造成的静态下垂.
+    // 缺省nullopt=不加补偿(台架/无重力轴不需要); 只在实车按实测填写.
+    std::optional<float> gravity_ff_nm{};
 };
 
 // 底盘几何: 每项都来自机械记录, 缺项时保持 nullopt.
@@ -87,13 +91,17 @@ struct WheelGeometryConfig {
 struct JointGeometryConfig {
     Domain domain{Domain::main_yaw};
     std::optional<float> zero_offset_rad{};
-    std::optional<float> min_rad{};
+    std::optional<float> min_rad{};   // 机械止点: 只做反馈越界故障保护.
     std::optional<float> max_rad{};
     // 明确无机械限位的DJI台架轴: 不猜上电圈数, 必须通过align显式建立连续参考.
     bool manual_continuous{false};
     // 独立机构调试尚未测机械端点: 保留标记零位, 不伪造限位.
     // DJI仅支持1:1单圈绝对参考, 启动选相对标记最近的一圈后连续跟踪; DM沿用原生绝对角.
     bool commissioning_unbounded{false};
+    // 操作限幅(可选, 放在末尾以保持既有位置化初始化语义): 比机械止点更窄的实车可用带,
+    // 只夹下发/保持目标, 不参与越界故障判据. 缺省nullopt=直接夹到[min_rad,max_rad].
+    std::optional<float> command_min_rad{};
+    std::optional<float> command_max_rad{};
 };
 
 // 时序与时效配置. 默认值只是"尚未配置"的占位, 不代表已实测的周期或超时.
@@ -126,6 +134,8 @@ struct SentinelConfig {
     PerceptionTiming perception{};
     std::optional<SerialGeometry> serial{};
     Origin serial_origin{Origin::unspecified};
+    // No deployed role enables this. First-stage experimental policy is offline-fixture only.
+    std::optional<PitchIdentificationPolicy> pitch_identification{};
 };
 
 enum class ConfigIssue : std::uint8_t {
@@ -158,6 +168,7 @@ enum class ConfigIssue : std::uint8_t {
     invalid_dm_limits,
     missing_dm_gains,
     invalid_dm_gains,
+    invalid_dm_gravity_ff,
     missing_wheel_geometry,
     invalid_wheel_geometry,
     degenerate_wheel_layout,

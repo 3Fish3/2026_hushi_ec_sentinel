@@ -38,7 +38,7 @@ struct Rig {
         if constexpr(gimbal) {
             plant.dji[4].position_rad=1027.0f*tau/8192.0f+0.1f;
             plant.dji[5].position_rad=2017.0f*tau/8192.0f-0.1f;
-            plant.dm.position_rad=34282.0f*25.0f/65535.0f-12.5f;
+            plant.dm.position_rad=*config.joints[2].zero_offset_rad;
         }
     }
     void tick(bool advance=false) {
@@ -54,8 +54,8 @@ struct Rig {
         plant.emit_feedback(config,[&](std::uint8_t bus,const ec::transport::CanFrame& f,ec::Tick at) {
             executor.route(bus,f,at,*in.now_us);
             if constexpr(gimbal) {
-                if((bus==1 && f.id==0x208) || (bus==2 && f.id==0x20a)) {
-                    velocities[f.id==0x208?0:1].receive(static_cast<std::uint16_t>((f.data[0]<<8)|f.data[1]),at,*in.now_us);
+                if(const auto slot=board::gimbal_velocity_slot(bus,f.id,f.size)) {
+                    velocities[*slot].receive(static_cast<std::uint16_t>((f.data[0]<<8)|f.data[1]),at,*in.now_us);
                 }
             }
         },now);
@@ -101,8 +101,28 @@ void configuration() {
         CHECK((report.domains[i]==app::ConfigState::complete)==(gimbal ? i>=4 && i<=6 : i>=7));
     }
     if constexpr(gimbal) {
-        for(const auto& j:c.joints) { CHECK(j.zero_offset_rad && !j.min_rad && !j.max_rad && j.commissioning_unbounded); }
-        auto bad=c;bad.dji[4].rotor_per_axis=2;
+        // main_yaw 仍是无限连续轴(无猜测限位); fire_yaw 已实测机械止点, 改为明确 min/max.
+        {
+            const auto& j=c.joints[0];
+            CHECK(j.zero_offset_rad && !j.min_rad && !j.max_rad && j.commissioning_unbounded);
+        }
+        {
+            const auto& j=c.joints[1];
+            CHECK(j.domain==Domain::fire_yaw && j.zero_offset_rad && j.min_rad && j.max_rad);
+            CHECK(!j.commissioning_unbounded && !j.manual_continuous);
+            CHECK(std::fabs(*j.min_rad-(-1.235f))<0.0001f);
+            CHECK(std::fabs(*j.max_rad-0.855f)<0.0001f);
+        }
+        // Pitch 使用已实测的水平零位与 Scheme B 限位; main_yaw 仍保持无猜测限位.
+        const auto& pitch=c.joints[2];
+        CHECK(pitch.domain==Domain::pitch && pitch.zero_offset_rad && pitch.min_rad && pitch.max_rad);
+        CHECK(!pitch.commissioning_unbounded);
+        CHECK(std::fabs(*pitch.zero_offset_rad-0.47322064f)<0.000001f);
+        CHECK(std::fabs(*pitch.min_rad-(-0.27275502f))<0.000001f);
+        CHECK(std::fabs(*pitch.max_rad-0.43624477f)<0.000001f);
+        auto bad=c;bad.joints[2].commissioning_unbounded=true;
+        CHECK(app::validate(bad,app::ConfigAudience::deployment).domains[idx(Domain::pitch)]!=app::ConfigState::complete);
+        bad=c;bad.dji[4].rotor_per_axis=2;
         CHECK(app::validate(bad,app::ConfigAudience::deployment).domains[idx(Domain::main_yaw)]!=app::ConfigState::complete);
         bad=c;bad.joints[0].commissioning_unbounded=false;
         CHECK(app::validate(bad,app::ConfigAudience::deployment).domains[idx(Domain::main_yaw)]!=app::ConfigState::complete);
@@ -135,9 +155,20 @@ void gimbal_contracts() {
     r.tick();CHECK(*host::raw_slot(*r.bus1.last_with_id(0x1fe),3)>0);
     CHECK(r.targets(Domain::fire_yaw,-0.4f)==app::AcceptResult::accepted);
     r.tick();CHECK(*host::raw_slot(*r.bus2.last_with_id(0x2fe),1)<0); // 发射 yaw 在 CAN2
-    // 未测机械端点不复用旧限位; 此处仅离线接收验证, 不对实物下发大角度.
-    CHECK(r.targets(Domain::fire_yaw,4.0f)==app::AcceptResult::accepted);
-    CHECK(r.targets(Domain::pitch,12.4f)==app::AcceptResult::limit_violation); // 加零偏后越MIT映射范围
+    // fire_yaw 已实测机械止点[-1.235,0.855]; 越界目标整包拒绝.
+    CHECK(r.targets(Domain::fire_yaw,4.0f)==app::AcceptResult::limit_violation);
+    CHECK(r.targets(Domain::fire_yaw,-1.3f)==app::AcceptResult::limit_violation);
+    CHECK(r.targets(Domain::fire_yaw,0.9f)==app::AcceptResult::limit_violation);
+    CHECK(r.targets(Domain::fire_yaw,0.5f)==app::AcceptResult::accepted);   // 带内
+    CHECK(r.targets(Domain::fire_yaw,-1.0f)==app::AcceptResult::accepted);  // 带内
+    CHECK(r.targets(Domain::pitch,12.4f)==app::AcceptResult::limit_violation); // 同时越软限位与MIT映射范围
+    CHECK(r.targets(Domain::pitch,-0.273f)==app::AcceptResult::limit_violation); // 越机械下界
+    CHECK(r.targets(Domain::pitch,0.437f)==app::AcceptResult::limit_violation);  // 越机械上界
+    // 操作带[-0.132,+0.235]: 机械止点内的目标若越出操作带也必须拒绝.
+    CHECK(r.targets(Domain::pitch,-0.272f)==app::AcceptResult::limit_violation); // 机械内但低于操作带
+    CHECK(r.targets(Domain::pitch,0.435f)==app::AcceptResult::limit_violation);  // 机械内但高于操作带
+    CHECK(r.targets(Domain::pitch,-0.131f)==app::AcceptResult::accepted);        // 带内
+    CHECK(r.targets(Domain::pitch,0.234f)==app::AcceptResult::accepted);         // 带内
     CHECK(r.targets(Domain::pitch,0.1f)==app::AcceptResult::accepted);
     bool mit=false;
     for(int i=0;i<12;++i) {
@@ -160,7 +191,7 @@ void gimbal_contracts() {
     r.plant.dji[4].emitting=true;r.warmup();
     CHECK(!r.application.snapshot().executions[idx(Domain::main_yaw)].execute);
 }
-void shooter_contracts() {
+[[maybe_unused]] void shooter_contracts() {
     Rig r;r.warmup();
     CHECK(r.targets(Domain::trigger,1)==app::AcceptResult::accepted);
     r.tick();CHECK(!r.application.snapshot().executions[idx(Domain::trigger)].execute);

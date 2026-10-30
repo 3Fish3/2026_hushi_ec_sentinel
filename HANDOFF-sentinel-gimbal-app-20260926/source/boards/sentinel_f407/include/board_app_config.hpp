@@ -10,11 +10,14 @@
 // 合成夹具 (app::synthetic_config()) 只用于主机离线测试, 绝不作为本镜像的默认配置.
 #include "sentinel_config.hpp"
 #include "sentinel_remote.hpp"
-#include "board_app_bench_config.hpp"
-#include "board_app_chassis_config.hpp"
+#include "board_app_bench_config.hpp" // IWYU pragma: keep (used in bench builds)
+#include "board_app_chassis_config.hpp" // IWYU pragma: keep (used in chassis builds)
 #include "board_app_mechanism_config.hpp"
 #ifndef EC_APP_GIMBAL_COMMISSIONING
 #define EC_APP_GIMBAL_COMMISSIONING 0
+#endif
+#ifndef EC_APP_GIMBAL_REMOTE_VERIFY
+#define EC_APP_GIMBAL_REMOTE_VERIFY 0
 #endif
 #ifndef EC_APP_SHOOTER_COMMISSIONING
 #define EC_APP_SHOOTER_COMMISSIONING 0
@@ -28,8 +31,24 @@
 #ifndef EC_APP_GM6020_BENCH
 #define EC_APP_GM6020_BENCH 0
 #endif
+#ifndef EC_APP_PITCH_IDENTIFICATION
+#define EC_APP_PITCH_IDENTIFICATION 0
+#endif
+#if EC_APP_PITCH_IDENTIFICATION
+#if !EC_APP_GIMBAL_COMMISSIONING
+#error "Pitch identification is only supported in the gimbal APP role"
+#endif
+#ifndef EC_APP_PITCH_POLICY_HEADER
+#error "Supply a reviewed physical policy header; there are no deployment defaults"
+#endif
+#include EC_APP_PITCH_POLICY_HEADER
+#endif
 #include <array>
+#include <bit>
+#include <limits>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace ec::sentinel::board {
 // 已确认接线 (2026-10-27 实车只读采集与用户接线确认, 与 board_observation.hpp 的 dji_mode
@@ -53,6 +72,16 @@ inline constexpr std::array<HarnessEntry, 9> known_dji_harness{{
     {2, drivers::DjiMode::c620_current, 6},    // 反馈 0x206
     {2, drivers::DjiMode::c610_current, 7},    // 反馈 0x207
 }};
+// 云台测速复用已确认接线表，避免测速与设备接收总线分别硬编码。
+[[nodiscard]] constexpr std::optional<std::size_t> gimbal_velocity_slot(
+    std::uint8_t bus, std::uint32_t id, std::uint8_t size) noexcept {
+    if (size != 8) { return std::nullopt; }
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& entry = known_dji_harness[i + 4];
+        if (bus == entry.bus && id == 0x204u + entry.device_id) { return i; }
+    }
+    return std::nullopt;
+}
 // 实车记录已读回DM CAN2控制ID1/反馈ID0x011, MIT量程12.5rad/30rad/s/10N·m.
 // 这里仍只声明接线存在; 协议量程不等于pitch机械行程或可直接部署的控制参数.
 inline constexpr bool known_dm_harness = true;
@@ -102,7 +131,15 @@ struct AppControlStep {
 // 操纵速度、方向和具体档位须按新方案回填, 不在这里用任意值冒充实测基线.
 [[nodiscard]] constexpr app::RemoteMappingConfig deployment_mapping() noexcept {
     app::RemoteMappingConfig mapping{};
-#if EC_APP_GIMBAL_COMMISSIONING || EC_APP_SHOOTER_COMMISSIONING
+#if EC_APP_GIMBAL_REMOTE_VERIFY
+    mapping.layout = app::RemoteLayout::gimbal_validation;
+    // 遥控验证的待调速率策略, 不是机械实测额定值; 不改 PID/零位/反馈量程.
+    mapping.stick_deadzone = 0.05f;
+    mapping.yaw_rate_max_rad_s = 0.5f;
+    // 2026-10-29 pitch满杆目标速率由0.1提到0.6rad/s, 为原目标速率6倍.
+    // 旧速度测试平均值含到位后的保持时间, 不可当作恒速能力或控制带宽.
+    mapping.pitch_rate_max_rad_s = 0.6f;
+#elif EC_APP_GIMBAL_COMMISSIONING || EC_APP_SHOOTER_COMMISSIONING
     mapping.layout = app::RemoteLayout::mechanism_commissioning;
 #elif EC_APP_CHASSIS_COMMISSIONING
     mapping.layout = app::RemoteLayout::chassis_commissioning;
@@ -117,7 +154,30 @@ inline constexpr std::uint32_t app_target_ttl_ms = 100;
 inline constexpr std::uint32_t app_host_link_ttl_ms = 200;
 inline constexpr float app_max_dt_s = 0.005f;
 
-// 部署配置: 只有类别与上述软件策略, 没有任何装配槽.
+[[nodiscard]] constexpr app::SentinelConfig with_pitch_identification(app::SentinelConfig config) noexcept {
+#if EC_APP_PITCH_IDENTIFICATION
+    constexpr auto policy = trusted_pitch_identification_policy;
+    static_assert(policy.require_capture && policy.deployment_opt_in,
+        "Deployment identification must explicitly require capture and opt in");
+    static_assert(policy.min_rad < policy.max_rad && policy.max_amplitude_nm > 0 &&
+        policy.max_expected_torque_nm >= policy.max_amplitude_nm && policy.max_velocity_rad_s > 0 &&
+        policy.max_tracking_error_rad > 0 && policy.min_half_period_us > 0 &&
+        policy.max_duration_us > 0 && policy.max_duration_us < 0x80000000u &&
+        policy.max_feedback_age_us > 0 && policy.max_feedback_age_us < 0x80000000u &&
+        policy.max_step_us > 0 && policy.max_step_us <= app_max_dt_ms * 1000u,
+        "Invalid trusted Pitch policy");
+    static_assert(policy.min_rad >= -std::numeric_limits<float>::max() &&
+        policy.max_rad <= std::numeric_limits<float>::max() &&
+        policy.max_expected_torque_nm <= std::numeric_limits<float>::max() &&
+        policy.max_velocity_rad_s <= std::numeric_limits<float>::max() &&
+        policy.max_tracking_error_rad <= std::numeric_limits<float>::max(),
+        "Pitch policy bounds must be finite");
+    config.pitch_identification = policy;
+#endif
+    return config;
+}
+
+// 部署配置: 默认只声明类别/时序, 机构角色按独立配置补齐装配槽.
 [[nodiscard]] constexpr app::SentinelConfig deployment_config() noexcept {
     app::SentinelConfig config{};
     config.kind = app::ConfigKind::real_deployment;
@@ -128,7 +188,7 @@ inline constexpr float app_max_dt_s = 0.005f;
     config.timing.host_link_ttl = Lifetime{app_host_link_ttl_ms};
     config.timing.max_dt_s = app_max_dt_s;
 #if EC_APP_GIMBAL_COMMISSIONING || EC_APP_SHOOTER_COMMISSIONING
-    return mechanism_commissioning_config(config, EC_APP_GIMBAL_COMMISSIONING != 0);
+    return with_pitch_identification(mechanism_commissioning_config(config, EC_APP_GIMBAL_COMMISSIONING != 0));
 #elif EC_APP_CHASSIS_COMMISSIONING
     return chassis_commissioning_config(config);
 #elif EC_APP_FOUR_MOTOR_BENCH
@@ -196,6 +256,39 @@ inline constexpr std::uint32_t deployment_summary_layout = 2; // 2: 增补每槽
     return summary;
 }
 
+// Separate fixed-layout descriptor: do not silently change DeploymentSummary v2.
+struct PitchDeploymentSummary {
+    std::uint32_t magic, layout, enabled, require_capture;
+    std::uint32_t min_rad, max_rad, max_amplitude_nm, max_expected_torque_nm;
+    std::uint32_t max_velocity_rad_s, max_tracking_error_rad;
+    std::uint32_t min_half_period_us, max_duration_us, max_feedback_age_us, max_step_us;
+    std::uint32_t zero_offset_rad, soft_min_rad, soft_max_rad, dm_address;
+    std::uint32_t target_ttl_ms, link_ttl_ms, record_bytes;
+};
+[[nodiscard]] constexpr PitchDeploymentSummary summarize_pitch(const app::SentinelConfig& config) noexcept {
+    const auto p = config.pitch_identification.value_or(app::PitchIdentificationPolicy{});
+    const auto& joint = config.joints[2];
+    return {0x50494431u, 1u, p.deployment_opt_in ? 1u : 0u, p.require_capture ? 1u : 0u,
+        std::bit_cast<std::uint32_t>(p.min_rad), std::bit_cast<std::uint32_t>(p.max_rad),
+        std::bit_cast<std::uint32_t>(p.max_amplitude_nm), std::bit_cast<std::uint32_t>(p.max_expected_torque_nm),
+        std::bit_cast<std::uint32_t>(p.max_velocity_rad_s), std::bit_cast<std::uint32_t>(p.max_tracking_error_rad),
+        p.min_half_period_us, p.max_duration_us, p.max_feedback_age_us, p.max_step_us,
+        std::bit_cast<std::uint32_t>(joint.zero_offset_rad.value_or(0.0f)),
+        std::bit_cast<std::uint32_t>(joint.min_rad.value_or(0.0f)),
+        std::bit_cast<std::uint32_t>(joint.max_rad.value_or(0.0f)), summarize(config).dm_address,
+        config.timing.target_ttl.ms, config.timing.host_link_ttl.ms, 64u};
+}
+inline constexpr PitchDeploymentSummary pitch_deployment_summary = summarize_pitch(deployment_config());
+static_assert(sizeof(PitchDeploymentSummary) == 21u * sizeof(std::uint32_t));
+#if EC_APP_PITCH_IDENTIFICATION
+static_assert(pitch_deployment_summary.enabled == 1 && pitch_deployment_summary.require_capture == 1);
+static_assert(deployment_config().joints[2].min_rad && deployment_config().joints[2].max_rad &&
+    trusted_pitch_identification_policy.min_rad >= *deployment_config().joints[2].min_rad &&
+    trusted_pitch_identification_policy.max_rad <= *deployment_config().joints[2].max_rad,
+    "Identification bounds must remain inside calibrated joint limits");
+static_assert(trusted_pitch_identification_policy.max_expected_torque_nm <=
+    deployment_config().dm[0].limits.value().torque_max_nm, "Pitch policy exceeds MIT torque encoding range");
+#endif
 inline constexpr DeploymentSummary deployment_summary = summarize(deployment_config());
 static_assert(deployment_summary.magic == deployment_summary_magic);
 static_assert(deployment_summary.kind == static_cast<std::uint32_t>(app::ConfigKind::real_deployment),
@@ -213,6 +306,9 @@ extern "C" {
 // 外部链接 + used 保证它被发出; 读取方必须经 volatile 指针读, 否则 Release 下引用会被
 // 常量折叠, 链接器就会把符号 GC 掉 (镜像里就没有可读的部署摘要了).
 // 因此本头文件不得被同一二进制里的多个 TU 同时包含.
+extern const ec::sentinel::board::PitchDeploymentSummary ec_pitch_identification_summary;
+[[gnu::used]] const ec::sentinel::board::PitchDeploymentSummary ec_pitch_identification_summary =
+    ec::sentinel::board::pitch_deployment_summary;
 extern const ec::sentinel::board::DeploymentSummary ec_app_deployment_summary;
 [[gnu::used]] const ec::sentinel::board::DeploymentSummary ec_app_deployment_summary =
     ec::sentinel::board::deployment_summary;

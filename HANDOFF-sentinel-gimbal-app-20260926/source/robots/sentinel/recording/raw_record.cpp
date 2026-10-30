@@ -1,10 +1,14 @@
 #include "raw_record.hpp"
 #include <algorithm>
+#include <bit>
 
 namespace ec::sentinel::recording {
 void Recorder::push(Record r, MicroTick now) noexcept {
     advance(now);
     if (state_ != State::recording) { return; }
+    // 连续 control 流只承载 Pitch 关节: IMU 记录在入口即剔除, 不挤占 200 Hz 控制带宽.
+    const bool pitch_stream = continuous_ && profile_ == Profile::control;
+    if (pitch_stream && r.kind != Kind::can && r.kind != Kind::control) { return; }
     std::size_t key{};
     std::uint32_t period{};
     switch (r.kind) {
@@ -17,10 +21,11 @@ void Recorder::push(Record r, MicroTick now) noexcept {
             constexpr std::array<std::uint8_t, 10> mapping{0, 1, 2, 3, 4, 5, 9, 6, 7, 8};
             if (r.stream != mapping[selected_domain_]) { return; }
         }
-        key = 3 + r.stream; period = profile_ == Profile::rotation ? (continuous_ ? 4000 : 2000) : 1000; break;
+        key = 3 + r.stream; period = pitch_stream ? pitch_stream_period_us
+            : (profile_ == Profile::rotation ? (continuous_ ? 4000 : 2000) : 1000); break;
     case Kind::control:
         if (profile_ != Profile::control || r.stream != selected_domain_) { return; }
-        key = 13 + r.stream; period = 1000; break;
+        key = 13 + r.stream; period = pitch_stream ? pitch_stream_period_us : 1000; break;
     }
     if (key >= last_.size()) { return; }
     if (seen_[key] && (r.source_sequence == sources_[key] || r.sampled_us - last_[key].us < period)) { return; }
@@ -48,11 +53,29 @@ void Recorder::imu(const drivers::Bmi088Reading& sample, MicroTick now) noexcept
 }
 void Recorder::can(std::uint8_t bus, const transport::CanFrame& frame, MicroTick at, MicroTick now,
     std::uint32_t lost) noexcept {
-    // 固定候选安装映射, 不由 CAN ID 猜 C610/C620 比例. 未匹配帧仍由原有 collector 统计.
-    constexpr std::array<std::uint16_t, 10> ids{0x201, 0x202, 0x203, 0x204, 0x20a, 0x208, 0x205, 0x206, 0x207, 0};
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        const auto expected_bus = i == 4 || i == 5 || i == 9 ? 1 : 2;
-        if (bus != expected_bus || frame.id != ids[i]) { continue; }
+    // 权威规范物理 CAN 流映射:
+    // stream 0: CAN1 0x201 LF
+    // stream 1: CAN1 0x202 RF
+    // stream 2: CAN1 0x203 LB
+    // stream 3: CAN1 0x204 RB
+    // stream 4: CAN1 0x208 main_yaw
+    // stream 5: CAN2 0x20a fire_yaw
+    // stream 6: CAN2 0x205 frictionL
+    // stream 7: CAN2 0x206 frictionR
+    // stream 8: CAN2 0x207 feeder
+    // stream 9: CAN2 0x011 Pitch (DM MST_ID)
+    // 严格校验 bus 与 ID, 错误总线或未知 ID 均不映射, 严禁静默强制转换.
+    // 记录库不依赖 capture 库以避免库依赖循环; 使用本地验证过的 constexpr 映射.
+    struct CanonicalStream {
+        std::uint8_t bus;
+        std::uint16_t id;
+    };
+    constexpr std::array<CanonicalStream, 10> streams{{
+        {1, 0x201}, {1, 0x202}, {1, 0x203}, {1, 0x204}, {1, 0x208},
+        {2, 0x20a}, {2, 0x205}, {2, 0x206}, {2, 0x207}, {2, 0x011}
+    }};
+    for (std::size_t i = 0; i < streams.size(); ++i) {
+        if (bus != streams[i].bus || frame.id != streams[i].id) { continue; }
         Record r{Kind::can, static_cast<std::uint8_t>(i), 4, 0, ++can_sequences_[i], at.us, at.us, lost, 0xffffffffu, 0};
         r.data[0] = bus | (static_cast<std::uint32_t>(frame.size) << 8) | (static_cast<std::uint32_t>(frame.id) << 16);
         for (std::size_t n = 0; n < 8; ++n) { r.data[1 + n / 4] |= static_cast<std::uint32_t>(frame.data[n]) << ((n % 4) * 8); }
@@ -67,7 +90,8 @@ std::size_t Recorder::request(std::span<const std::uint8_t> in, std::span<std::u
     const auto op = in[1]; const auto run = get32(in, 4); const auto arg = get32(in, 8);
     std::uint8_t error{};
     if (op == 1) {
-        if (!run || in[2] < 1 || in[2] > 3 || in[3] > 9 || (in[2] == 3 && in[3] == 6) || (in[2] != 3 && in[3] != 0) || arg == 0 || arg > 2000000u) { error = 1; }
+        // 短窗开放 control 域 6 (Pitch DM 关节域), 移除了历史排除 (in[2] == 3 && in[3] == 6)
+        if (!run || in[2] < 1 || in[2] > 3 || in[3] > 9 || (in[2] != 3 && in[3] != 0) || arg == 0 || arg > 2000000u) { error = 1; }
         else if (run == run_) {
             if (in[2] != static_cast<std::uint8_t>(profile_) || in[3] != selected_domain_ || arg != duration_) { error = 2; }
         } else if (state_ == State::recording) { error = 3; }
@@ -108,13 +132,17 @@ std::size_t Recorder::stream_request(std::span<const std::uint8_t> in,
     const auto op=in[1]; const auto run=get32(in,4); const auto duration=get32(in,8);
     std::uint8_t error{};
     if (op==1) {
-        if (!run || in[2]<1 || in[2]>2 || in[3]!=0 || !duration || duration>1800000000u) { error=1; }
+        // 连续流支持 Profile 1(stationary)/2(rotation) 以及 Profile 3(control) 的域 6 (Pitch 达妙 DM).
+        // continuous control 仅开放域 6, 且 stream_packet 对 control 记录按完整 64B 承载 (不截断),
+        // 两条流各限速 200 Hz, 使 UART 带宽维持在物理预算内.
+        if (!run || in[2]<1 || in[2]>3 || (in[2]==3 ? in[3]!=6 : in[3]!=0)
+            || !duration || duration>1800000000u) { error=1; }
         else if (continuous_ && run==run_) {
-            if (static_cast<std::uint8_t>(profile_)!=in[2] || duration_!=duration) { error=2; }
+            if (static_cast<std::uint8_t>(profile_)!=in[2] || selected_domain_!=in[3] || duration_!=duration) { error=2; }
         } else if (state_==State::recording || (continuous_ && size_)) { error=3; }
         else {
             continuous_=true;stream_finished_=false;head_=size_=0;
-            run_=run;profile_=static_cast<Profile>(in[2]);selected_domain_=0;duration_=duration;
+            run_=run;profile_=static_cast<Profile>(in[2]);selected_domain_=in[3];duration_=duration;
             start_=end_=now;sequence_=lost_=0;seen_.fill(false);state_=State::recording;
         }
     } else if (op==2) {
@@ -129,9 +157,10 @@ std::size_t Recorder::stream_packet(std::span<std::uint8_t> out, MicroTick now,
     if (!continuous_ || stream_finished_ || out.size()<32 || (size_==0 && state_==State::recording)) { return 0; }
     std::size_t length=32;
     // 最多3条/帧; 仅省去未使用的payload尾部, 主机无损恢复标准64B记录.
+    // 每条按自身类型定长: gyro 48B, CAN 44B, control 完整 64B (绝不截断控制字); 混合3条仍 <= 224B.
     for (;count<std::min<std::size_t>(3,size_);++count) {
         const auto& r=records_[(head_+count)%capacity];
-        const std::size_t bytes=r.kind==Kind::gyro ? 48 : 44;
+        const std::size_t bytes=r.kind==Kind::gyro ? 48 : r.kind==Kind::control ? record_bytes : 44;
         if (out.size()-length<bytes) { break; }
         std::array<std::uint8_t,record_bytes> full{};
         (void)encode(r,full);std::copy_n(full.begin(),bytes,out.begin()+length);length+=bytes;
@@ -142,5 +171,25 @@ void Recorder::stream_consume(std::size_t count) noexcept {
     if (!continuous_ || count>size_) { return; }
     head_=(head_+count)%capacity;size_-=count;
     if (state_!=State::recording && size_==0) { stream_finished_=true; }
+}
+bool Recorder::pitch_stream_healthy(std::uint32_t run, MicroTick now) const noexcept {
+    if (!continuous_ || state_ != State::recording) { return false; }
+    if (profile_ != Profile::control || selected_domain_ != 6) { return false; }
+    // run 精确匹配: 不匹配意味着已被新采集替换, 或已被停止/结束.
+    if (!run || run != run_) { return false; }
+    // 累计丢条或队列已满都表示数据链已不完整, 不允许再对外声称健康.
+    if (lost_ || size_ == capacity) { return false; }
+    const std::uint32_t elapsed = now.us - start_.us;
+    // 半个 32 位回绕窗口之外属于时间戳倒退或歧义区, 无法无歧义判定.
+    if (elapsed >= 0x80000000u) { return false; }
+    // 越过截止时刻即到期 (查询不推进状态机, 因此在此自行判定).
+    return elapsed < duration_;
+}
+bool Recorder::pitch_stream_ready(std::uint32_t run, std::uint64_t required_us,
+    MicroTick now) const noexcept {
+    if (!pitch_stream_healthy(run, now)) { return false; }
+    const std::uint64_t elapsed = now.us - start_.us;
+    const std::uint64_t remaining = static_cast<std::uint64_t>(duration_) - elapsed;
+    return remaining >= required_us;
 }
 } // 命名空间 ec::sentinel::recording

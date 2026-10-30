@@ -76,6 +76,30 @@ if(EC_BUILD_TESTS OR EC_BUILD_EXAMPLES)
 endif()
 if(EC_BUILD_TESTS)
     enable_testing()
+    add_executable(ec_sentinel_gimbal_remote_tests tests/sentinel_gimbal_remote_tests.cpp)
+    target_link_libraries(ec_sentinel_gimbal_remote_tests PRIVATE ec_sentinel_app)
+    target_include_directories(ec_sentinel_gimbal_remote_tests PRIVATE boards/sentinel_f407/include robots/sentinel/host)
+    target_compile_definitions(ec_sentinel_gimbal_remote_tests PRIVATE EC_APP_GIMBAL_COMMISSIONING=1 EC_APP_GIMBAL_REMOTE_VERIFY=1
+        EC_APP_PITCH_IDENTIFICATION=1 EC_APP_PITCH_POLICY_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/boards/sentinel_f407/include/pitch_experiment_policy.hpp")
+    target_compile_options(ec_sentinel_gimbal_remote_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+    add_test(NAME sentinel_gimbal_remote_validation_contracts COMMAND ec_sentinel_gimbal_remote_tests)
+    add_executable(ec_pitch_identification_tests tests/pitch_identification_tests.cpp)
+    target_link_libraries(ec_pitch_identification_tests PRIVATE ec_sentinel_app)
+    target_include_directories(ec_pitch_identification_tests PRIVATE robots/sentinel/host)
+    target_compile_options(ec_pitch_identification_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+    add_test(NAME sentinel_pitch_excitation_contracts COMMAND ec_pitch_identification_tests)
+    set_tests_properties(sentinel_pitch_excitation_contracts PROPERTIES TIMEOUT 30)
+    add_executable(ec_pitch_identification_protocol_tests tests/pitch_identification_protocol_tests.cpp)
+    target_link_libraries(ec_pitch_identification_protocol_tests PRIVATE ec_sentinel_app)
+    target_include_directories(ec_pitch_identification_protocol_tests PRIVATE robots/sentinel/host)
+    target_compile_options(ec_pitch_identification_protocol_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+    add_test(NAME sentinel_pitch_identification_protocol_contracts COMMAND ec_pitch_identification_protocol_tests)
+    set_tests_properties(sentinel_pitch_identification_protocol_contracts PROPERTIES TIMEOUT 30)
+    add_executable(ec_pitch_stream_link_tests tests/pitch_stream_link_tests.cpp)
+    target_link_libraries(ec_pitch_stream_link_tests PRIVATE ec_sentinel_app)
+    target_compile_options(ec_pitch_stream_link_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+    add_test(NAME sentinel_pitch_stream_link_contracts COMMAND ec_pitch_stream_link_tests)
+    set_tests_properties(sentinel_pitch_stream_link_contracts PROPERTIES TIMEOUT 30)
     add_executable(ec_capture_stream_tests tests/capture_stream_tests.cpp)
     target_link_libraries(ec_capture_stream_tests PRIVATE ec_sentinel_recording)
     add_test(NAME sentinel_capture_stream_contracts COMMAND ec_capture_stream_tests)
@@ -262,12 +286,24 @@ if(EC_BUILD_TESTS)
         add_test(NAME sentinel_raw_calibration_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/sentinel_raw_tests.py" "$<TARGET_FILE:ec_capture_tests>" "$<TARGET_FILE:ec_sentinel_replay>")
         set_tests_properties(sentinel_raw_calibration_contracts PROPERTIES TIMEOUT 60)
+        add_test(NAME sentinel_pitch_recording_pipeline_contracts COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/pitch_recording_pipeline_tests.py" "$<TARGET_FILE:ec_pitch_identification_tests>")
+        set_tests_properties(sentinel_pitch_recording_pipeline_contracts PROPERTIES TIMEOUT 30
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
         add_test(NAME board_monitor_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/board_monitor_tests.py" "$<TARGET_FILE:ec_uart_frame_tests>")
         add_test(NAME sentinel_host_client_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/sentinel_host_client_tests.py"
             "$<TARGET_FILE:ec_sentinel_app_host>")
         set_tests_properties(sentinel_host_client_contracts PROPERTIES TIMEOUT 120)
+        add_test(NAME sentinel_pitch_hold_contracts COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/tests/pitch_hold" -p "test_*.py")
+        set_tests_properties(sentinel_pitch_hold_contracts PROPERTIES TIMEOUT 60
+            ENVIRONMENT "SENTINEL_PITCH_BACKEND=$<TARGET_FILE:ec_sentinel_app_host>;PYTHONDONTWRITEBYTECODE=1")
+        add_test(NAME sentinel_pitch_identification_contracts COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/tests/pitch_identification" -p "test_*.py")
+        set_tests_properties(sentinel_pitch_identification_contracts PROPERTIES TIMEOUT 60
+            ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/robots/sentinel/host;PYTHONDONTWRITEBYTECODE=1;SENTINEL_PITCH_BACKEND=$<TARGET_FILE:ec_sentinel_app_host>;SENTINEL_PITCH_STREAM_BACKEND=$<TARGET_FILE:ec_capture_stream_tests>")
         add_test(NAME motor_bench_client_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/motor_bench_tests.py" "$<TARGET_FILE:ec_gm6020_bench_tests>")
         set_tests_properties(motor_bench_client_contracts PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77)
@@ -346,7 +382,8 @@ endif()
 if(EC_BUILD_TESTS)
     # 注册清单自检: 期望的测试名一个都不能少 (漏注册会让"通过"看起来依然完整).
     # 放在文件末尾, 因此必须等示例测试也注册完成后再核对.
-    set(_ec_expected_tests sentinel_capture_contracts sentinel_capture_stream_contracts core_contracts control_contracts axis_contracts dm_contracts
+    set(_ec_expected_tests sentinel_gimbal_remote_validation_contracts sentinel_pitch_excitation_contracts sentinel_pitch_identification_protocol_contracts
+        sentinel_pitch_stream_link_contracts sentinel_capture_contracts sentinel_capture_stream_contracts core_contracts control_contracts axis_contracts dm_contracts
         session_authority_contracts sentinel_app_config_contracts
         sentinel_app_authority_contracts sentinel_app_execution_contracts
         sentinel_app_perception_contracts sentinel_serial_contracts sentinel_app_remote_contracts sentinel_app_cycle_contracts
@@ -355,7 +392,7 @@ if(EC_BUILD_TESTS)
         attitude_contracts omni_kinematics_contracts gm6020_bench_contracts uart_frame_contracts
         monitor_registry_contracts sil_contracts)
     if(Python3_Interpreter_FOUND)
-        list(APPEND _ec_expected_tests sentinel_capture_client_contracts sentinel_capture_stream_client_contracts sentinel_raw_calibration_contracts board_monitor_contracts
+        list(APPEND _ec_expected_tests sentinel_pitch_identification_contracts sentinel_pitch_recording_pipeline_contracts sentinel_capture_client_contracts sentinel_capture_stream_client_contracts sentinel_raw_calibration_contracts board_monitor_contracts
             sentinel_host_client_contracts motor_bench_client_contracts motor_bench_console_contracts sentinel_console_contracts sentinel_feedback_audit_contracts firmware_tool_contracts
             monitor_swd_contracts monitor_swd_selftest doc_link_contracts)
     endif()

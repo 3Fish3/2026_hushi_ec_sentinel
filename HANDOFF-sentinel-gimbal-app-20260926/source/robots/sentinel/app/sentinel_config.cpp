@@ -185,6 +185,13 @@ void check_origin(Origin origin, ConfigAudience audience, Validator& v, bool& st
         v.add(ConfigIssue::invalid_dm_gains);
         complete = false;
     }
+    // 重力前馈可选, 但一旦填写必须有限且不超过该轴的力矩编码上限, 防止越界驱动.
+    if (slot.gravity_ff_nm &&
+        (!std::isfinite(*slot.gravity_ff_nm) || !slot.limits ||
+         std::fabs(*slot.gravity_ff_nm) > slot.limits->torque_max_nm)) {
+        v.add(ConfigIssue::invalid_dm_gravity_ff);
+        complete = false;
+    }
     return complete ? ConfigState::complete : ConfigState::incomplete;
 }
 
@@ -253,6 +260,20 @@ void check_origin(Origin origin, ConfigAudience audience, Validator& v, bool& st
             v.add(ConfigIssue::invalid_joint_range);
             states[index] = ConfigState::incomplete;
             continue;
+        }
+        // 操作限幅可选; 一旦给出必须成对、有限, 且严格落在机械止点[min_rad,max_rad]之内.
+        if (joint.command_min_rad || joint.command_max_rad) {
+            const bool band_ok = joint.command_min_rad && joint.command_max_rad &&
+                std::isfinite(*joint.command_min_rad) && std::isfinite(*joint.command_max_rad) &&
+                joint.min_rad && joint.max_rad &&
+                *joint.command_min_rad >= *joint.min_rad &&
+                *joint.command_max_rad <= *joint.max_rad &&
+                *joint.command_min_rad < *joint.command_max_rad;
+            if (!band_ok) {
+                v.add(ConfigIssue::invalid_joint_range);
+                states[index] = ConfigState::incomplete;
+                continue;
+            }
         }
         states[index] = ConfigState::complete;
     }

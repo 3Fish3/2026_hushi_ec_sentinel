@@ -1,5 +1,6 @@
 #include "sentinel_cycle.hpp"
 #include <algorithm>
+#include <cmath>
 
 namespace ec::sentinel::app {
 SentinelCycle::SentinelCycle(SentinelApp& app, SentinelExecutor& executor,
@@ -87,7 +88,8 @@ CycleOutcome SentinelCycle::control(const CycleInputs& inputs) noexcept {
     const auto main_index = domain_index(Domain::main_yaw);
     const auto main_joint = joint_rad[main_index];
     // 主 yaw 本地操纵捕获局部惯性方向, 其它两个域仍是机械关节角.
-    joint_rad[main_index] = main_joint ? perception_.local_direction_rad() : std::nullopt;
+    joint_rad[main_index] = mapper_.config().layout == RemoteLayout::gimbal_validation
+        ? main_joint : (main_joint ? perception_.local_direction_rad() : std::nullopt);
     if (!joint_rad[main_index]) { mapper_.drop_held_angle(Domain::main_yaw); }
     const auto snapshot = remote_.snapshot(inputs.now);
     outcome_.remote_online = snapshot.has_value();
@@ -103,13 +105,33 @@ CycleOutcome SentinelCycle::control(const CycleInputs& inputs) noexcept {
     drop_stale_hold(Domain::main_yaw);
     drop_stale_hold(Domain::fire_yaw);
     drop_stale_hold(Domain::pitch);
+    // 调参切遥控时继承仍在执行的机械角目标, 不把重力保持误差清成零.
+    // 仅此角色使用机械参考; 未执行、反馈无效或惯性参考目标仍按实际姿态初始化.
+    if (mapper_.config().layout == RemoteLayout::gimbal_validation && snapshot &&
+        snapshot->switch_left == drivers::Dr16Switch::up &&
+        snapshot->switch_right != drivers::Dr16Switch::down &&
+        app_.snapshot().permission.source == Source::maintenance) {
+        for (const auto domain : {Domain::main_yaw, Domain::fire_yaw, Domain::pitch}) {
+            const auto i = domain_index(domain);
+            const auto& execution = app_.snapshot().executions[i];
+            const auto old_target = app_.target(domain);
+            if (joint_rad[i] && execution.execute && execution.frame == YawFrame::joint &&
+                old_target && old_target->fresh_at(inputs.now) &&
+                execution.adopted_target && std::isfinite(*execution.adopted_target)) {
+                joint_rad[i] = execution.adopted_target;
+            }
+        }
+    }
     const auto previous_heading = mapper_.held_angle(Domain::main_yaw);
     auto command = mapper_.step(snapshot, inputs.now, inputs.dt_s, joint_rad);
     for (const auto domain : {Domain::fire_yaw, Domain::pitch}) {
         auto& target = command.targets.domains[domain_index(domain)];
         const auto& range = app_.joint_geometry(domain);
         if (target && range.min_rad && range.max_rad) {
-            target->value = std::clamp(target->value, *range.min_rad, *range.max_rad);
+            // 目标优先夹到操作限幅(若配置); 机械止点仍只用于反馈越界保护, 不放宽目标.
+            const float lo = range.command_min_rad.value_or(*range.min_rad);
+            const float hi = range.command_max_rad.value_or(*range.max_rad);
+            target->value = std::clamp(target->value, lo, hi);
             mapper_.limit_held_angle(domain, target->value);
         }
     }
@@ -167,9 +189,16 @@ CycleOutcome SentinelCycle::control(const CycleInputs& inputs) noexcept {
     //    产出的执行判定, 目标晚一个周期才生效会让"已接受"与"本周期实际下发"错位.
     //    停止态/非本地来源不下发本地目标 (来源资格仍由应用仲裁判定).
     if (command.intent == SourceIntent::local && !command.manual_stop) {
+        if (mapper_.config().layout == RemoteLayout::gimbal_validation &&
+            app_.authority().source() != Source::remote) {
+            // 先使新遥控授权生效, 再以新 token 接受本周期目标. 两次评估之间不提交 CAN,
+            // 因此切档不会先发送一次 disable; 旧维护目标仍按原规则作废.
+            app_.update(inputs.now, inputs_);
+        }
         outcome_.accept_attempted = true;
         outcome_.accept = app_.accept_remote_targets(command.targets, inputs.now,
-            inputs_.main_yaw.validity == DomainValidity::valid);
+            inputs_.main_yaw.validity == DomainValidity::valid ||
+                mapper_.config().layout == RemoteLayout::gimbal_validation);
     }
 
     // 5. 应用仲裁: 来源选择/人工停止/故障影响/目标生命周期都在应用层完成.

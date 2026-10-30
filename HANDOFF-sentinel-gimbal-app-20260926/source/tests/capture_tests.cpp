@@ -61,7 +61,7 @@ void raw_contracts() {
     request[1] = 3; raw::put32(request, 8, 0);
     CHECK(recorder.request(request, reply, {140}) == 96 && reply[9] == 1);
     const auto record = raw::decode(std::span<const std::uint8_t>{reply}.subspan(32, 64));
-    CHECK(record && record->run == 123 && record->stream == 5 && record->sampled_us == 0xfffffff0u);
+    CHECK(record && record->run == 123 && record->stream == 4 && record->sampled_us == 0xfffffff0u);
     CHECK(record->data[1] == 0x04030201u && record->data[2] == 0x08070605u);
     auto broken = reply; broken[32] = 9;
     CHECK(!raw::decode(std::span<const std::uint8_t>{broken}.subspan(32, 64)));
@@ -87,9 +87,12 @@ void raw_control_domain_contracts() {
     namespace raw = ec::sentinel::recording;
     struct Expected { std::uint8_t domain, stream, bus; std::uint16_t id; };
     // 域编号与 CAN 流编号不是同一顺序; 独立列出真实反馈地址作为断言依据.
-    constexpr std::array<Expected, 9> expected{{
-        {0, 0, 2, 0x201}, {1, 1, 2, 0x202}, {2, 2, 2, 0x203}, {3, 3, 2, 0x204},
-        {4, 4, 1, 0x20a}, {5, 5, 1, 0x208},
+    // 权威规范拓扑: CAN1 (bus 1) 包含 0..4 (LF, RF, LB, RB, main_yaw);
+    // CAN2 (bus 2) 包含 5..9 (fire_yaw, Pitch DM, frictionL, frictionR, feeder).
+    // control 域 6 (Pitch) 映射至 CAN 流 9 (0x011 MST_ID).
+    constexpr std::array<Expected, 10> expected{{
+        {0, 0, 1, 0x201}, {1, 1, 1, 0x202}, {2, 2, 1, 0x203}, {3, 3, 1, 0x204},
+        {4, 4, 1, 0x208}, {5, 5, 2, 0x20a}, {6, 9, 2, 0x011},
         {7, 6, 2, 0x205}, {8, 7, 2, 0x206}, {9, 8, 2, 0x207}
     }};
     for (const auto& selected : expected) {
@@ -115,6 +118,122 @@ void raw_control_domain_contracts() {
         CHECK(((record->data[0] >> 8) & 255u) == 8);
         CHECK((record->data[0] >> 16) == selected.id);
         CHECK(record->data[1] == 0x04030201u && record->data[2] == 0x08070605u);
+    }
+}
+void raw_domain6_and_filtering_contracts() {
+    namespace raw = ec::sentinel::recording;
+
+    // 1. 验证 CAN2 0x011 映射至 stream 9, 而 CAN1 0x011 或未知 ID 在任意总线均被拒绝未映射
+    {
+        raw::Recorder recorder;
+        std::array<std::uint8_t, 12> request{1, 1, 2, 0}; // rotation profile: 接收 stream 4, 5, 9
+        raw::put32(request, 4, 888); raw::put32(request, 8, 100000);
+        std::array<std::uint8_t, 240> reply{};
+        CHECK(recorder.request(request, reply, {1000}) == 32 && reply[2] == 0);
+
+        // 注入 CAN1 0x011: 错误总线 (Pitch DM 在 CAN2), 必须拒绝
+        recorder.can(1, {0x011, 8, {1, 2, 3, 4, 5, 6, 7, 8}}, {1500}, {1500}, 0);
+        CHECK(recorder.size() == 0);
+
+        // 注入未知/非法 ID: 绝不能被静默强制转换
+        for (std::uint16_t bad : {0x200, 0x209, 0x111, 0x000, 0x012, 0x7ff}) {
+            recorder.can(1, {bad, 8, {}}, {1600}, {1600}, 0);
+            recorder.can(2, {bad, 8, {}}, {1650}, {1650}, 0);
+            CHECK(recorder.size() == 0);
+        }
+
+        // 注入 CAN2 0x011: 正确总线与 ID -> 接收为 stream 9
+        recorder.can(2, {0x011, 8, {0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44}}, {2000}, {2000}, 0);
+        CHECK(recorder.size() == 1);
+
+        request[1] = 2; // 冻结
+        CHECK(recorder.request(request, reply, {3000}) == 32);
+        request[1] = 3; raw::put32(request, 8, 0); // 读取
+        CHECK(recorder.request(request, reply, {3000}) == 96 && reply[9] == 1);
+        const auto rec = raw::decode(std::span<const std::uint8_t>{reply}.subspan(32, 64));
+        CHECK(rec && rec->kind == raw::Kind::can && rec->stream == 9);
+        CHECK((rec->data[0] & 255u) == 2 && (rec->data[0] >> 16) == 0x011);
+        CHECK(rec->data[1] == 0xddccbbaau && rec->data[2] == 0x44332211u);
+    }
+
+    // 2. 验证 Profile::control 下 domain 6 短窗行为:
+    // 仅接收 Pitch CAN (CAN2 0x011 -> stream 9) 与 Pitch 控制轨迹 (stream 6);
+    // 过滤其它 CAN (包括相同编号的 stream 6 frictionL) 及其它域控制轨迹;
+    // 校验 64 字节 payload 精度完整、非有限数与状态标志
+    {
+        raw::Recorder recorder;
+        std::array<std::uint8_t, 12> request{1, 1, 3, 6}; // profile=3 (control), domain=6 (Pitch)
+        raw::put32(request, 4, 606); raw::put32(request, 8, 100000);
+        std::array<std::uint8_t, 240> reply{};
+        CHECK(recorder.request(request, reply, {1000}) == 32 && reply[2] == 0);
+        CHECK(recorder.control_domain() == 6);
+
+        // 其它 CAN 注入 (底盘、主云台、发射云台、摩擦轮、拨弹) -> 必须全被过滤
+        recorder.can(1, {0x201, 8, {}}, {1100}, {1100}, 0); // stream 0
+        recorder.can(1, {0x208, 8, {}}, {1200}, {1200}, 0); // stream 4
+        recorder.can(2, {0x20a, 8, {}}, {1300}, {1300}, 0); // stream 5
+        recorder.can(2, {0x205, 8, {}}, {1400}, {1400}, 0); // stream 6 (摩擦轮L, 严禁与 domain 6 混淆!)
+        recorder.can(2, {0x207, 8, {}}, {1450}, {1450}, 0); // stream 8
+        CHECK(recorder.size() == 0);
+
+        // 其它域控制轨迹注入 -> 必须全被过滤
+        for (std::uint8_t other_d : {0, 1, 2, 3, 4, 5, 7, 8, 9}) {
+            raw::Record other{raw::Kind::control, other_d, 1, 0, 1, 1500, 1500, 0, 0, 0};
+            recorder.push(other, {1500});
+            CHECK(recorder.size() == 0);
+        }
+
+        // 注入 Pitch CAN: CAN2 0x011 -> 映射至 stream 9
+        recorder.can(2, {0x011, 8, {1, 2, 3, 4, 5, 6, 7, 8}}, {2000}, {2000}, 0);
+        CHECK(recorder.size() == 1);
+
+        // 注入 Pitch 控制轨迹 (stream 6)
+        raw::Record pitch_ctrl{raw::Kind::control, 6, 1, 0, 1, 2100, 2100, 0, 0, 0};
+        pitch_ctrl.data[0] = std::bit_cast<std::uint32_t>(0.125f);  // requested rad
+        pitch_ctrl.data[1] = std::bit_cast<std::uint32_t>(0.120f);  // adopted rad
+        pitch_ctrl.data[2] = std::bit_cast<std::uint32_t>(0.118f);  // measured rad
+        pitch_ctrl.data[3] = std::bit_cast<std::uint32_t>(-0.05f);  // measured vel rad/s
+        pitch_ctrl.data[4] = std::bit_cast<std::uint32_t>(0.75f);   // feedforward Nm
+        pitch_ctrl.data[5] = std::bit_cast<std::uint32_t>(0.001f);  // dt
+        pitch_ctrl.data[6] = 2u | (1u << 8) | (3u << 16) | (3u << 20) | (1u << 29) | (1u << 30);
+        pitch_ctrl.data[7] = 0; // accepted
+        recorder.push(pitch_ctrl, {2100});
+        CHECK(recorder.size() == 2);
+
+        // 再次注入非 Pitch CAN -> 过滤
+        recorder.can(2, {0x206, 8, {}}, {2200}, {2200}, 0);
+        CHECK(recorder.size() == 2);
+
+        // 冻结并读取短窗
+        request[1] = 2;
+        CHECK(recorder.request(request, reply, {3000}) == 32 && reply[3] == 2);
+        request[1] = 3; raw::put32(request, 8, 0);
+        CHECK(recorder.request(request, reply, {3000}) == 160 && reply[9] == 2);
+
+        const auto c_can = raw::decode(std::span<const std::uint8_t>{reply}.subspan(32, 64));
+        CHECK(c_can && c_can->kind == raw::Kind::can && c_can->stream == 9);
+        CHECK((c_can->data[0] & 255u) == 2 && (c_can->data[0] >> 16) == 0x011);
+
+        const auto c_trace = raw::decode(std::span<const std::uint8_t>{reply}.subspan(96, 64));
+        CHECK(c_trace && c_trace->kind == raw::Kind::control && c_trace->stream == 6);
+        CHECK(std::bit_cast<float>(c_trace->data[0]) == 0.125f);
+        CHECK(std::bit_cast<float>(c_trace->data[1]) == 0.120f);
+        CHECK(std::bit_cast<float>(c_trace->data[2]) == 0.118f);
+        CHECK(std::bit_cast<float>(c_trace->data[3]) == -0.05f);
+        CHECK(std::bit_cast<float>(c_trace->data[4]) == 0.75f);
+        CHECK(std::bit_cast<float>(c_trace->data[5]) == 0.001f);
+        CHECK((c_trace->data[6] & (1u << 29)) != 0); // excitation-active
+        CHECK((c_trace->data[6] & (1u << 30)) != 0); // excitation-latch
+    }
+
+    // 3. 验证 continuous 流拒绝 Profile::control 请求
+    {
+        raw::Recorder recorder;
+        std::array<std::uint8_t, 12> stream_req{1, 1, 3, 0}; // profile=3 (control)
+        raw::put32(stream_req, 4, 111); raw::put32(stream_req, 8, 100000);
+        std::array<std::uint8_t, 256> out{};
+        CHECK(recorder.stream_request(stream_req, out, {1000}) == 32);
+        CHECK(out[2] == 1); // 拒绝: error = 1
     }
 }
 void raw_golden() {
@@ -153,6 +272,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--raw-replay") == 0) { return raw_replay(argv[2]); }
     raw_contracts();
     raw_control_domain_contracts();
+    raw_domain6_and_filtering_contracts();
     if (argc == 2 && std::strcmp(argv[1], "--golden") == 0) { golden(); return 0; }
     for (unsigned rid = 0; rid < 256; ++rid) {
         const auto f = cap::read_request(static_cast<std::uint8_t>(rid));

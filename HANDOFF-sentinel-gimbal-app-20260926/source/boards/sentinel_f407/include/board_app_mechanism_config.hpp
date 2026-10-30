@@ -30,12 +30,61 @@ namespace ec::sentinel::board {
             slot.velocity_pid=control::PidConfig{0.06f/2.5f,1.0f/2.5f,0,1,-1,1};
             slot.position_pid=control::PidConfig{7.5f,0,0,15,-15,15};
         }
+        // 2026-10-29 fire_yaw 自瞄(小信号跟踪)带宽调参终版. 目标是响应快且准(小范围跟瞄).
+        // 判据从"阶跃超调"改为"频率响应带宽": 在中心-0.2rad做0.5/1/2Hz正弦, 测增益/相位滞后.
+        // 结果(内置posKp=16, velKp原地0.09, velKi=2.0): 1Hz增益约0.95/滞后约28deg(原7.5/0.055约0.75/52),
+        // 2Hz增益约0.85/滞后约49deg, 0.5Hz增益约1.0; 静止保持峰峰0.0008rad, +-0.1rad阶跃超调约1%/0%.
+        // 扫参脚本用param_write直接写原生值0.09/2.00; 这里必须原样持久化, 不能再除2.5A.
+        // 对应界面电流口径为Kp=0.225、Ki=5.0; posKp=20超调升到6.4%, 保留16.
+        // 只覆盖fire_yaw; main_yaw保持上方初值. 实测: build/identification/pitch/fy-bandwidth-*, fy-stability-*.
+        config.dji[5].velocity_pid=control::PidConfig{0.09f,2.0f,0,1,-1,1};
+        config.dji[5].position_pid=control::PidConfig{16.0f,0,0,15,-15,15};
         constexpr float tau=6.2831853071795864769f;
         config.joints[0]={app::Domain::main_yaw,1027.0f*tau/8192.0f,{},{},false,true};
-        config.joints[1]={app::Domain::fire_yaw,2017.0f*tau/8192.0f,{},{},false,true};
-        config.joints[2]={app::Domain::pitch,34282.0f*25.0f/65535.0f-12.5f,{},{},false,true};
-        // 使用已通过四电机台架的MIT初值, 不是重力负载调参完成的承诺.
-        pitch.mit_kp=35.0f/4095.0f*500.0f; pitch.mit_kd=0.0f;
+        // fire_yaw 有机械止点: 2026-10-29 遥控实测两端推杆到底机构卡死, 约 -1.2395..+0.8598 rad
+        // ( -71.02..+49.26 deg, 总行程约120deg ). 改为明确机械限位, 不再是无限连续轴.
+        // 限位在 zero_offset 下的关节角坐标; 留少量向内余量避免常态顶死报 fault.
+        config.joints[1].domain=app::Domain::fire_yaw;
+        config.joints[1].zero_offset_rad=2017.0f*tau/8192.0f;
+        config.joints[1].min_rad=-1.235f;   // 实测卡死-1.2395, 向内留0.0045rad
+        config.joints[1].max_rad=0.855f;    // 实测卡死+0.8598, 向内留0.0048rad
+        config.joints[1].manual_continuous=false;
+        config.joints[1].commissioning_unbounded=false;
+        // 2026-10-27 实车: 水平姿态在旧零位下读到 joint=-0.10452408rad,
+        // 故新零位 = 旧零位 + 该读数 = 0.4732206rad, 水平姿态此后显示 0.
+        // 限位由旧零位实测(下 -0.3772791 / 上 0.35172069)整体平移 +0.10452408 换算:
+        // 下限采用实测下止点无余量(-0.272755rad), 避免云台受重力停在下止点报 fault;
+        // 上限向内保留 0.02rad(约1.15°)缓冲余量(+0.436245rad), 防止高速抬头冲顶.
+        constexpr float pitch_zero = 34282.0f * 25.0f / 65535.0f - 12.5f - 0.10452408f;
+        constexpr float pitch_min = -0.3772791f + 0.10452408f;
+        constexpr float pitch_max = 0.35172069f + 0.10452408f - 0.02f;
+        // 2026-10-29 实车实测操作带(显式赋值, 不依赖位置初始化顺序):
+        //   上位(摩擦轮可用) +0.235, 下位(摩擦轮可用) -0.132. 只夹下发目标, 不是机械止点.
+        constexpr float pitch_command_min = -0.132f;
+        constexpr float pitch_command_max = 0.235f;
+        config.joints[2].domain = app::Domain::pitch;
+        config.joints[2].zero_offset_rad = pitch_zero;
+        config.joints[2].min_rad = pitch_min;    // 机械止点: 仅越界故障保护
+        config.joints[2].max_rad = pitch_max;
+        config.joints[2].manual_continuous = false;
+        config.joints[2].commissioning_unbounded = false;
+        config.joints[2].command_min_rad = pitch_command_min;  // 目标只允许在此带内
+        config.joints[2].command_max_rad = pitch_command_max;
+        // 2026-10-29 实车实测: 台架初值(35/4095*500=4.2735, kd=0)在重力负载下无法抬升.
+        // 方波辨识前的抬升验证: 稳态跟随误差 = 重力力矩/Kp, 旧值约0.042rad, 超过0.03rad限值.
+        // Kp=50, Kd=1.5 实测可从 -0.259rad 抬到 -0.018rad(约1.05deg重力下垂), 7.1s稳定.
+        // 仍需在方波辨识与遥控验证中复核; RAM内可被上位机热改, 断电恢复为这里的值.
+        // 2026-10-29 自瞄调参: 140/3.0用户反馈明显抖动, 90/2.2快速全行程时持续嗡鸣.
+        // 改用已在线测试的75/2.0, 同0.6rad/s往返误差RMS约0.0167rad(90/2.2约0.0159).
+        // 用户授权将75/2.0固化; 可听嗡鸣成因仍需结合现场验证, 不由100Hz角度记录推断.
+        // 记录: build/identification/pitch/two-axis-diagnose-20261029-171108.
+        pitch.mit_kp=75.0f; pitch.mit_kd=2.0f;
+        // 2026-10-29 实车实测(Kp=50/Kd=1.5): -0.10/0/+0.10/+0.20rad 四点稳态保持力矩
+        // 0.803/0.852/0.842/0.833N·m, 下垂恒为约0.0175rad(1°)且不随角度放大.
+        // 取均值0.875N·m做常驻重力前馈, 使 MIT 在目标处不再需要靠位置误差出力顶重力,
+        // 到位误差从约1°降到接近0. 该常数只在实测±0.2rad区间成立, 不是cos重力模型;
+        // 力矩编码±10N·m, 远未触限. 前馈过大会把机构顶过目标, 调整须重新按此方法实测.
+        pitch.gravity_ff_nm=0.875f;
     } else {
         config.shooter_commissioning=true;
         for (std::size_t i=6; i<9; ++i) {

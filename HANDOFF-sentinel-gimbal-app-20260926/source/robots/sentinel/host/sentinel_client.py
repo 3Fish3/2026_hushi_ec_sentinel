@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import queue
 import struct
@@ -22,9 +23,13 @@ import subprocess
 import sys
 import threading
 import time
+from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from io import BufferedReader
 from pathlib import Path
+from typing import Protocol
 
 PROTOCOL_VERSION = 3
 FRAME_START = 0x7E
@@ -41,12 +46,14 @@ PARAM_WRITE = 0x45
 STATUS = 0x46
 DIAGNOSTICS = 0x47
 PERMIT = 0x48
+PITCH_IDENTIFICATION = 0x49
 HELLO_ACK = 0xC0
 ACK = 0xC1
 TARGETS_ACK = 0xC2
 PARAM_VALUE = 0xC4
 STATUS_SNAPSHOT = 0xC6
 DIAGNOSTICS_PAGE = 0xC7
+PITCH_IDENTIFICATION_STATUS = 0xC9
 
 RESPONSE_OF = {
     HELLO: HELLO_ACK,
@@ -58,6 +65,7 @@ RESPONSE_OF = {
     PERMIT: ACK,
     STATUS: STATUS_SNAPSHOT,
     DIAGNOSTICS: DIAGNOSTICS_PAGE,
+    PITCH_IDENTIFICATION: PITCH_IDENTIFICATION_STATUS,
 }
 
 RESULT_NAMES = {
@@ -78,6 +86,13 @@ RESULT_NAMES = {
     14: "UNSUPPORTED",
 }
 RESULT_BY_NAME = {name: code for code, name in RESULT_NAMES.items()}
+
+PITCH_IDENT_STATES = ("idle", "baseline", "square", "final_hold", "complete", "fault")
+PITCH_IDENT_FAULTS = (
+    "none", "authority", "feedback", "isolation", "envelope", "binding",
+    "timing", "torque", "transmit", "cancelled", "reserved_10", "capture",
+)
+PITCH_IDENT_OPS = ("query", "start", "cancel", "reset")
 
 # 对齐类型: 机械关节参考与惯性/odom 对齐偏移是两件不同的事, 不能共用一个数值.
 ALIGN_KINDS = ("joint_reference", "inertial_alignment")
@@ -262,6 +277,35 @@ def encode_diagnostics(session: int, sequence: int, page: int = 0) -> bytes:
     return _pack(DIAGNOSTICS, struct.pack("<IIB", session, sequence, page))
 
 
+def encode_pitch_identification(
+    session: int,
+    sequence: int,
+    op: int | str,
+    config_epoch: int = 0,
+    reference_epoch: int = 0,
+    run_id: int = 0,
+    amplitude_nm: float = 0.0,
+    half_period_us: int = 0,
+    baseline_us: int = 0,
+    cycles: int = 0,
+    final_hold_us: int = 0,
+) -> bytes:
+    op_code = PITCH_IDENT_OPS.index(op) if isinstance(op, str) else int(op)
+    if op_code == 1:
+        body = struct.pack(
+            "<IIBIIIfIIII",
+            session, sequence, op_code, int(config_epoch), int(reference_epoch),
+            int(run_id), float(amplitude_nm), int(half_period_us), int(baseline_us),
+            int(cycles), int(final_hold_us),
+        )
+    else:
+        body = struct.pack(
+            "<IIBII",
+            session, sequence, op_code, int(config_epoch), int(reference_epoch),
+        )
+    return _pack(PITCH_IDENTIFICATION, body)
+
+
 def decode_hello_ack(payload: bytes) -> dict:
     if len(payload) != 47:
         raise ProtocolError(f'hello_ack: expected 47 bytes, got {len(payload)}')
@@ -269,10 +313,10 @@ def decode_hello_ack(payload: bytes) -> dict:
         struct.unpack_from("<IIIIII", payload, 2)
     role, complete, startable, boot_identity = struct.unpack_from("<4B", payload, 26)
     identity = payload[30:46].split(b"\0", 1)[0].decode("ascii", "replace")
-    return dict(session=session, config_epoch=config_epoch, reference_epoch=reference_epoch,
-                clock_ms=clock, boot_id=boot_id, client_nonce=nonce, role=role,
-                config_complete=bool(complete), startable=bool(startable),
-                boot_identity_available=bool(boot_identity), identity=identity, config_kind=payload[46])
+    return {"session": session, "config_epoch": config_epoch, "reference_epoch": reference_epoch,
+                "clock_ms": clock, "boot_id": boot_id, "client_nonce": nonce, "role": role,
+                "config_complete": bool(complete), "startable": bool(startable),
+                "boot_identity_available": bool(boot_identity), "identity": identity, "config_kind": payload[46]}
 
 
 def decode_ack(payload: bytes) -> dict:
@@ -288,9 +332,9 @@ def decode_ack(payload: bytes) -> dict:
         raise ProtocolError(f"ack: undeclared payload length {len(payload)}")
     session, sequence = struct.unpack_from("<II", payload, 2)
     result, reason = struct.unpack_from("<BB", payload, 10)
-    out = dict(session=session, sequence=sequence, result=result,
-               result_name=RESULT_NAMES.get(result, f"?{result}"), reason=reason,
-               reason_name=REASON_NAMES[reason] if reason < len(REASON_NAMES) else f"?{reason}")
+    out: dict[str, int | float | str] = {"session": session, "sequence": sequence, "result": result,
+               "result_name": RESULT_NAMES.get(result, f"?{result}"), "reason": reason,
+               "reason_name": REASON_NAMES[reason] if reason < len(REASON_NAMES) else f"?{reason}"}
     if len(payload) == 24:
         out["effective"] = struct.unpack_from("<f", payload, 12)[0]
         out["reference_epoch"], out["config_epoch"] = struct.unpack_from("<II", payload, 16)
@@ -307,12 +351,12 @@ def decode_param_value(payload: bytes) -> dict:
     for i in range(count):
         base = 16 + i * 16
         param_id, kind, overridden, value, low, high = struct.unpack_from("<HBBfff", payload, base)
-        entries.append(dict(id=param_id, kind=PARAM_KIND_NAMES[kind] if kind < 2 else "?",
-                            overridden=bool(overridden & 1), value=value, min=low, max=high,
-                            domain=_name(DOMAINS, (overridden >> 1) & 15),
-                            whole_vehicle=bool(overridden & 32), writable=bool(overridden & 64)))
-    return dict(session=session, sequence=sequence, count=count, offset=offset, total=total,
-                entries=entries)
+        entries.append({"id": param_id, "kind": PARAM_KIND_NAMES[kind] if kind < 2 else "?",
+                            "overridden": bool(overridden & 1), "value": value, "min": low, "max": high,
+                            "domain": _name(DOMAINS, (overridden >> 1) & 15),
+                            "whole_vehicle": bool(overridden & 32), "writable": bool(overridden & 64)})
+    return {"session": session, "sequence": sequence, "count": count, "offset": offset, "total": total,
+                "entries": entries}
 
 
 class _Cursor:
@@ -342,8 +386,8 @@ def _age(value):
 def decode_status(payload: bytes) -> dict:
     r = _Cursor(payload, 2)
     session, sequence, page, config_epoch, reference_epoch, clock = r.take('IIBIII')
-    out = dict(session=session, sequence=sequence, page=page, config_epoch=config_epoch,
-               reference_epoch=reference_epoch, clock_ms=clock)
+    out = {"session": session, "sequence": sequence, "page": page, "config_epoch": config_epoch,
+               "reference_epoch": reference_epoch, "clock_ms": clock}
     if page == 0:
         out['control_ms'], out['evaluated_us'], out['boot_id'] = r.take('III')
         source, flags, config_kind = r.take('BBB')
@@ -352,15 +396,15 @@ def decode_status(payload: bytes) -> dict:
                    locally_ready=bool(flags & 8), boot_identity_available=bool(flags & 16),
                    main_yaw_degraded=bool(flags & 32), config_kind=config_kind)
         validity, reason, references, local_epoch, alignment_epoch = r.take('BBBII')
-        main = dict(validity=_name(VALIDITY_NAMES, validity), reason=_name(REASON_NAMES, reason),
-                    local_reference=bool(references & 1), odom_aligned=bool(references & 2),
-                    local_epoch=local_epoch, alignment_epoch=alignment_epoch)
+        main = {"validity": _name(VALIDITY_NAMES, validity), "reason": _name(REASON_NAMES, reason),
+                    "local_reference": bool(references & 1), "odom_aligned": bool(references & 2),
+                    "local_epoch": local_epoch, "alignment_epoch": alignment_epoch}
         out['joints'] = {}
         for domain in ('main_yaw', 'fire_yaw', 'pitch'):
             angle, rate, pa, va, valid = r.take('ffIIB')
-            out['joints'][domain] = dict(angle_rad=angle, rate_rad_s=rate,
-                position_valid=bool(valid & 1), velocity_valid=bool(valid & 2),
-                position_age_ms=_age(pa), velocity_age_ms=_age(va))
+            out['joints'][domain] = {"angle_rad": angle, "rate_rad_s": rate,
+                "position_valid": bool(valid & 1), "velocity_valid": bool(valid & 2),
+                "position_age_ms": _age(pa), "velocity_age_ms": _age(va)}
         main['orientation_V_to_local_wxyz'] = r.take('ffff')
         main['rate_V_rad_s'] = r.take('fff')
         main['heading_rad'], main['odom_offset_rad'], main['heading_gain'] = r.take('fff')
@@ -369,8 +413,8 @@ def decode_status(payload: bytes) -> dict:
         main['time_error_us'] = tuple(_age(x) for x in r.take('III'))
         out['main_platform'] = main
         validity, flags = r.take('BB')
-        wheel = dict(validity=_name(VALIDITY_NAMES, validity), rank_ok=bool(flags & 1),
-                     pose_valid=bool(flags & 2), continuous=bool(flags & 4))
+        wheel = {"validity": _name(VALIDITY_NAMES, validity), "rank_ok": bool(flags & 1),
+                     "pose_valid": bool(flags & 2), "continuous": bool(flags & 4)}
         wheel['twist'] = r.take('fff')
         wheel['pose_xy_yaw'] = r.take('fff')
         age, wheel['skew_us'], wheel['residual_rad_s'], wheel['gaps'] = r.take('IIfI')
@@ -385,21 +429,21 @@ def decode_status(payload: bytes) -> dict:
                    manual_stop=bool(manual_stop), launch_allowed=bool(launch), domains=[])
         for domain in DOMAINS:
             validity, mode, execute, reason, frames, target, measurement, pa, va = r.take('BBBBBffII')
-            out['domains'].append(dict(domain=domain, validity=_name(VALIDITY_NAMES, validity),
-                mode=_name(MODE_NAMES, mode), execute=bool(execute), reason=_name(REASON_NAMES, reason),
-                target=target, measurement=measurement, age_ms=_age(pa), velocity_age_ms=_age(va),
-                requested_frame=_name(YAW_FRAMES, frames & 3) if frames & 64 else None,
-                adopted_frame=_name(YAW_FRAMES, (frames >> 2) & 3),
-                measured_frame=_name(YAW_FRAMES, (frames >> 4) & 3), measurement_valid=bool(frames & 128)))
+            out['domains'].append({"domain": domain, "validity": _name(VALIDITY_NAMES, validity),
+                "mode": _name(MODE_NAMES, mode), "execute": bool(execute), "reason": _name(REASON_NAMES, reason),
+                "target": target, "measurement": measurement, "age_ms": _age(pa), "velocity_age_ms": _age(va),
+                "requested_frame": _name(YAW_FRAMES, frames & 3) if frames & 64 else None,
+                "adopted_frame": _name(YAW_FRAMES, (frames >> 2) & 3),
+                "measured_frame": _name(YAW_FRAMES, (frames >> 4) & 3), "measurement_valid": bool(frames & 128)})
     elif page == 2:
         out['requests'] = []
         for domain in DOMAINS:
             present, mode, frame, value, age, ttl = r.take('BBBfII')
-            out['requests'].append(dict(domain=domain, present=bool(present), mode=_name(MODE_NAMES, mode),
-                frame=_name(YAW_FRAMES, frame), value=value, age_ms=_age(age), ttl_ms=ttl))
+            out['requests'].append({"domain": domain, "present": bool(present), "mode": _name(MODE_NAMES, mode),
+                "frame": _name(YAW_FRAMES, frame), "value": value, "age_ms": _age(age), "ttl_ms": ttl})
         valid, x, y, yaw, at, integrated, rejected = r.take('BfffIII')
-        out['command_prediction'] = dict(valid=bool(valid), pose_xy_yaw=(x, y, yaw),
-            at_ms=at, integrated_ms=integrated, rejected_steps=rejected)
+        out['command_prediction'] = {"valid": bool(valid), "pose_xy_yaw": (x, y, yaw),
+            "at_ms": at, "integrated_ms": integrated, "rejected_steps": rejected}
         flags, = r.take('B')
         requested, adopted = r.take('fff'), r.take('fff')
         out['requested_twist'] = requested if flags & 1 else None
@@ -414,7 +458,7 @@ def decode_status(payload: bytes) -> dict:
 def decode_diagnostics(payload: bytes) -> dict:
     r = _Cursor(payload, 2)
     session, sequence, page, count = r.take('IIBB')
-    out = dict(session=session, sequence=sequence, page=page)
+    out = {"session": session, "sequence": sequence, "page": page}
     if page in (0, 2):
         if page == 0:
             keys = ('cycles', 'rejected_targets', 'target_invalidations', 'link_losses', 'source_changes',
@@ -433,7 +477,7 @@ def decode_diagnostics(payload: bytes) -> dict:
                 'wheel_integrated_us', 'wheel_continuous')
         if count != len(keys) + (8 if page == 2 else 0):
             raise ProtocolError(f'diagnostics page {page}: wrong count {count}')
-        out.update(zip(keys, r.take('I' * len(keys))))
+        out.update(zip(keys, r.take('I' * len(keys)), strict=True))
         if page == 2:
             out['wheel_sample_us'] = r.take('IIII')
             out['wheel_age_us'] = tuple(_age(value) for value in r.take('IIII'))
@@ -443,25 +487,49 @@ def decode_diagnostics(payload: bytes) -> dict:
         out['devices'] = []
         for slot in range(count):
             domain, flags, bus, protocol, device_id, feedback_id, age, velocity, effort, temp1, temp2 = r.take('BBBBHHIffBB')
-            out['devices'].append(dict(slot=slot, domain=_name(DOMAINS, domain), installed=bool(flags & 1),
-                online=bool(flags & 2), enabled=bool(flags & 4), faulted=bool(flags & 8),
-                assembled=bool(flags & 128), bus=bus, protocol=protocol, device_id=device_id,
-                feedback_id=feedback_id, age_ms=_age(age), velocity_rad_s=velocity,
-                effort=effort if flags & 64 else None, effort_unit='Nm' if protocol == 128 else 'raw',
-                temperature_c=temp1 if flags & 16 else None, rotor_temperature_c=temp2 if flags & 32 else None))
+            out['devices'].append({"slot": slot, "domain": _name(DOMAINS, domain), "installed": bool(flags & 1),
+                "online": bool(flags & 2), "enabled": bool(flags & 4), "faulted": bool(flags & 8),
+                "assembled": bool(flags & 128), "bus": bus, "protocol": protocol, "device_id": device_id,
+                "feedback_id": feedback_id, "age_ms": _age(age), "velocity_rad_s": velocity,
+                "effort": effort if flags & 64 else None, "effort_unit": 'Nm' if protocol == 128 else 'raw',
+                "temperature_c": temp1 if flags & 16 else None, "rotor_temperature_c": temp2 if flags & 32 else None})
     elif 10 <= page <= 17 or page == 20:
         if count not in (0, 1):
             raise ProtocolError(f'group page: wrong count {count}')
         out['group'] = None
         if count:
             bus, can_id, result, timing, computed, submitted, failed, invalid, dt, max_dt, last_compute, last_submit = r.take('BHBBIIIIffII')
-            out['group'] = dict(bus=bus, can_id=can_id, result=result, timing_observed=bool(timing & 1), stop_only=bool(timing & 2),
-                computations=computed, submitted=submitted, tx_failed=failed, invalid_steps=invalid,
-                last_dt_s=dt, max_dt_s=max_dt, last_computed_us=last_compute, last_submitted_us=last_submit)
+            out['group'] = {"bus": bus, "can_id": can_id, "result": result, "timing_observed": bool(timing & 1), "stop_only": bool(timing & 2),
+                "computations": computed, "submitted": submitted, "tx_failed": failed, "invalid_steps": invalid,
+                "last_dt_s": dt, "max_dt_s": max_dt, "last_computed_us": last_compute, "last_submitted_us": last_submit}
     else:
         raise ProtocolError(f'unknown diagnostics page {page}')
     r.finish()
     return out
+
+
+def decode_pitch_identification_status(payload: bytes) -> dict:
+    if len(payload) != 27:
+        raise ProtocolError(f"pitch_identification_status: expected 27 bytes, got {len(payload)}")
+    session, sequence = struct.unpack_from("<II", payload, 2)
+    result, reason, available, state, fault = struct.unpack_from("<5B", payload, 10)
+    run_id, requested_nm, encoded_nm = struct.unpack_from("<Iff", payload, 15)
+    return {
+        "session": session,
+        "sequence": sequence,
+        "result": result,
+        "result_name": RESULT_NAMES.get(result, f"?{result}"),
+        "reason": reason,
+        "reason_name": REASON_NAMES[reason] if reason < len(REASON_NAMES) else f"?{reason}",
+        "available": bool(available),
+        "state": state,
+        "state_name": PITCH_IDENT_STATES[state] if state < len(PITCH_IDENT_STATES) else f"?{state}",
+        "fault": fault,
+        "fault_name": PITCH_IDENT_FAULTS[fault] if fault < len(PITCH_IDENT_FAULTS) else f"?{fault}",
+        "run_id": run_id,
+        "requested_nm": requested_nm,
+        "encoded_nm": encoded_nm,
+    }
 
 
 DECODERS = {
@@ -471,20 +539,36 @@ DECODERS = {
     PARAM_VALUE: decode_param_value,
     STATUS_SNAPSHOT: decode_status,
     DIAGNOSTICS_PAGE: decode_diagnostics,
+    PITCH_IDENTIFICATION_STATUS: decode_pitch_identification_status,
 }
+
 
 # 短应答与成功布局混用会导致 struct.error 而不是明确的协议失败: 服务端在错误路径上
 # 统一回 ACK, 客户端先按类型/长度/身份确认, 再按对应布局解码.
 SHORT_ERROR_TYPES = (ACK,)
 
 
-class _FrameTransport:
+class RequestTransport(Protocol):
+    """The synchronous client only requires an exchange, not a serial device."""
+
+    def exchange(self, message: bytes) -> tuple[int, int, bytes]: ...
+
+
+class _FrameTransport(ABC):
     """同步单次请求与异步拥有者共用字节传输; 只在调用线程解析帧."""
 
     def __init__(self):
         self._decoder = FrameDecoder()
         self._frames = deque()
-        self.observer = None
+        self.observer: Callable[[str, bytes], None] | None = None
+
+    @abstractmethod
+    def send(self, message: bytes) -> None:
+        """Submit bytes through the concrete process/serial transport."""
+
+    @abstractmethod
+    def _read_chunk(self, timeout_s: float) -> bytes | None:
+        """Return new bytes, None on timeout, or b'' on a closed link."""
 
     def receive(self, timeout_s: float = 0.0):
         if self._frames:
@@ -530,9 +614,10 @@ class ProcessTransport(_FrameTransport):
         self._reader.start()
 
     def _read_loop(self) -> None:
-        assert self._process.stdout is not None
+        stream = self._process.stdout
+        assert isinstance(stream, BufferedReader)
         while not self._closing.is_set():
-            chunk = self._process.stdout.read1(512)
+            chunk = stream.read1(512)
             while not self._closing.is_set():
                 try:
                     self._incoming.put(chunk, timeout=0.05)
@@ -558,10 +643,8 @@ class ProcessTransport(_FrameTransport):
     def close(self) -> None:
         self._closing.set()
         if self._process.stdin:
-            try:
+            with contextlib.suppress(BrokenPipeError):
                 self._process.stdin.close()
-            except BrokenPipeError:
-                pass
         try:
             self._process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -609,7 +692,7 @@ class SentinelClient:
     CRC 正确不等于应答属于本次请求.
     """
 
-    transport: object
+    transport: RequestTransport
     session: int = 0
     sequence: int = 0
     frame_sequence: int = 0
@@ -734,6 +817,31 @@ class SentinelClient:
         return self._request(encode_diagnostics(self.session, sequence, page), DIAGNOSTICS,
                              DIAGNOSTICS_PAGE, self.session, sequence)
 
+    def pitch_identification(
+        self,
+        op: int | str,
+        config_epoch: int | None = None,
+        reference_epoch: int | None = None,
+        run_id: int = 0,
+        amplitude_nm: float = 0.0,
+        half_period_us: int = 0,
+        baseline_us: int = 0,
+        cycles: int = 0,
+        final_hold_us: int = 0,
+    ) -> dict:
+        info = self.hello_info
+        c_epoch = info.get("config_epoch", 0) if config_epoch is None else config_epoch
+        r_epoch = info.get("reference_epoch", 0) if reference_epoch is None else reference_epoch
+        sequence = self._next_sequence()
+        payload = encode_pitch_identification(
+            self.session, sequence, op, c_epoch, r_epoch,
+            run_id, amplitude_nm, half_period_us, baseline_us, cycles, final_hold_us,
+        )
+        return self._request(
+            payload, PITCH_IDENTIFICATION, PITCH_IDENTIFICATION_STATUS,
+            self.session, sequence,
+        )
+
 
 def observe_fast(transport, sequence: int) -> dict:
     """USART6 独立一致快照; 不握手、不刷新 USART1 业务会话、无执行器请求."""
@@ -774,7 +882,12 @@ def save_config(path: Path, entries: list, config_kind: int = 0) -> None:
 
 
 def load_config(path: Path, target_config_kind: int = 0) -> list:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ProtocolError("host config file could not be read as UTF-8 JSON") from error
+    if not isinstance(data, dict):
+        raise ProtocolError("host config must be a JSON object")
     if data.get("protocol_version") != PROTOCOL_VERSION:
         raise ProtocolError("host config file was written for another protocol version")
     if data.get('config_kind') == 1 and target_config_kind == 2:
@@ -804,7 +917,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="写一个参数 (ID 为十进制或 0x 前缀)")
     parser.add_argument("--target", nargs="+", metavar="FIELD",
                         help="下发单个机构目标; 其余域保持无目标 (可选第 4 项: 源年龄 ms)")
-    parser.add_argument("--align", nargs="+", metavar=("DOMAIN", "RAD"),
+    parser.add_argument("--align", nargs="+", metavar="FIELD",
                         help="建立参考 (可选第 3 项: joint_reference|inertial_alignment)")
     parser.add_argument("--permit", type=int, metavar="TTL_MS",
                         help="授予发射许可, 有效期 TTL_MS 毫秒 (0 = 撤销)")

@@ -25,6 +25,23 @@ constexpr std::uint32_t pitch_disable_retry_ms = 100;
 }
 
 // A08: 缺省撤输出动作由 SentinelApp::stop_action_for 决定, 这里只落实.
+// 实车部署 opt-in 的静态判定: 只依据显式配置事实, 不引入任何物理默认值, 不改 PID/零位/限幅.
+// 任一拓扑或几何与约定不符即拒绝, 不尝试“推测合理值”.
+[[nodiscard]] bool pitch_deployment_opt_in_valid(const SentinelConfig& config) noexcept {
+    if (!config.pitch_identification) { return false; }
+    const auto& policy = *config.pitch_identification;
+    if (!policy.valid() || !policy.deployment_opt_in || !policy.require_capture) { return false; }
+    const auto& dm = config.dm[0];
+    // 固定拓扑: CAN2 Pitch, 控制 ID 1 / 反馈主 ID 17 (0x011), 且必须已声明 MIT 量程.
+    if (!dm.installed || dm.bus != 2 || !dm.can_id || *dm.can_id != 0x01 ||
+        !dm.master_id || *dm.master_id != 0x011 || !dm.limits) { return false; }
+    const auto& joint = config.joints[joint_index(Domain::pitch)];
+    if (!joint.zero_offset_rad || !joint.min_rad || !joint.max_rad) { return false; }
+    if (!std::isfinite(*joint.zero_offset_rad) || !std::isfinite(*joint.min_rad) ||
+        !std::isfinite(*joint.max_rad)) { return false; }
+    // 策略包络必须落在已声明的机械关节范围内 (含等号: 端点由策略自己决定是否排除).
+    return policy.min_rad >= *joint.min_rad && policy.max_rad <= *joint.max_rad;
+}
 } // 内部辅助
 
 std::optional<float> recover_single_turn_joint(float min_rad, float max_rad,
@@ -87,6 +104,13 @@ SentinelExecutor::SentinelExecutor(const SentinelConfig& config, ConfigAudience 
     transport::CanTx& bus1, transport::CanTx& bus2, MicroTick (*clock)() noexcept) noexcept
     : config_(config), report_(validate(config, audience)), bus1_(&bus1), bus2_(&bus2), clock_(clock) {
     if (!report_.startable) { return; }
+    // 旧离线实验路径保持不变; 实车路径必须显式 opted-in 且采集门槛与拓扑/几何全部成立.
+    const bool offline_experiment = audience == ConfigAudience::offline_test &&
+        config.kind == ConfigKind::synthetic_fixture;
+    const bool deployment_experiment = audience == ConfigAudience::deployment &&
+        config.kind == ConfigKind::real_deployment && pitch_deployment_opt_in_valid(config);
+    pitch_identification_available_ = config.pitch_identification &&
+        config.pitch_identification->valid() && (offline_experiment || deployment_experiment);
     // 只把真正安装的槽放进布局检查: 合法部分装配不能被"未安装"占位项判为非法.
     std::array<drivers::DjiDeviceConfig, dji_slot_count> layout{};
     std::size_t layout_size = 0;
@@ -466,6 +490,34 @@ bool SentinelExecutor::set_dm_mit_gains(float kp, float kd) noexcept {
 
 std::optional<recording::Record> SentinelExecutor::trace(Domain domain, Tick now, const SentinelApp& app) const noexcept {
     const auto i = domain_index(domain);
+    if (domain == Domain::pitch) {
+        if (!config_.dm[0].installed || !pitch_step_.due) { return std::nullopt; }
+        const auto& execution = app.snapshot().executions[i];
+        const auto target = app.target(domain);
+        const auto feedback = joint_feedback(domain, now);
+        const float missing = std::numeric_limits<float>::quiet_NaN();
+        // Query/disable submissions must not masquerade as MIT command times.
+        const auto recorded_at = pitch_last_mit_submitted_at_.value_or(
+            pitch_last_mit_attempt_at_.value_or(pitch_stats_.last_computed));
+        const auto flags = static_cast<std::uint8_t>(1u | (pitch_last_mit_submitted_at_ ? 0u : 2u));
+        recording::Record r{recording::Kind::control, static_cast<std::uint8_t>(i), flags, 0,
+            pitch_stats_.computations, pitch_stats_.last_computed.us, recorded_at.us,
+            pitch_stats_.tx_failed, pitch_last_mit_submitted_at_ ? 0u : 0xffffffffu, pitch_identification_.run_id()};
+        const float feedforward = pitch_last_encoded_feedforward_nm_.value_or(missing);
+        const std::array values{target ? target->value : missing, execution.adopted_target.value_or(missing),
+            feedback.position_rad.value, feedback.velocity_rad_s.value, feedforward, pitch_step_.dt_s};
+        for (std::size_t n = 0; n < values.size(); ++n) { r.data[n] = std::bit_cast<std::uint32_t>(values[n]); }
+        const bool limited = false;
+        r.data[6] = static_cast<std::uint32_t>(execution.mode) | (static_cast<std::uint32_t>(execution.reason) << 8)
+            | (static_cast<std::uint32_t>(feedback.position_rad.validity) << 16)
+            | (static_cast<std::uint32_t>(feedback.velocity_rad_s.validity) << 20) | (limited ? 1u << 24 : 0);
+        r.data[6] |= static_cast<std::uint32_t>(target ? target->frame : execution.frame) << 25;
+        r.data[6] |= static_cast<std::uint32_t>(execution.frame) << 27;
+        if (pitch_identification_.active()) { r.data[6] |= (1u << 29); }
+        if (pitch_identification_.latched()) { r.data[6] |= (1u << 30); }
+        r.data[7] = static_cast<std::uint32_t>(pitch_last_mit_status_);
+        return r;
+    }
     if (!runtime_[i] || !axes_[i]) { return std::nullopt; }
     const auto& group = groups_[runtime_[i]->group];
     if (!group.step.due) { return std::nullopt; }
@@ -544,6 +596,81 @@ void SentinelExecutor::send_groups(Tick now) noexcept {
     }
 }
 
+PitchIdentificationEvidence SentinelExecutor::pitch_identification_evidence(
+    Tick now, MicroTick at, const SentinelApp& app) const noexcept {
+    PitchIdentificationEvidence e{};
+    const auto target = app.target(Domain::pitch);
+    const auto& execution = app.snapshot().executions[domain_index(Domain::pitch)];
+    e.maintenance = app.authority().holds() && app.authority().source() == Source::maintenance;
+    e.grant = app.authority().token().value_or(Grant{});
+    e.executing = execution.execute && target && target->mode == control::ControlMode::position &&
+        fresh(now, target->accepted_at, target->ttl);
+    e.isolated = true;
+    for (std::size_t i = 0; i < domain_count; ++i) {
+        if (i != domain_index(Domain::pitch) && app.snapshot().executions[i].execute) { e.isolated = false; }
+    }
+    e.config_epoch = app.config_epoch(); e.reference_epoch = app.reference_epoch();
+    e.target_rad = target ? target->value : std::numeric_limits<float>::quiet_NaN();
+    e.kp = dm_mit_kp(); e.kd = dm_mit_kd();
+    e.native_target_rad = e.target_rad + config_.joints[joint_index(Domain::pitch)].zero_offset_rad.value_or(0.0f);
+    const auto feedback = joint_feedback(Domain::pitch, now);
+    e.position_rad = feedback.position_rad.value; e.velocity_rad_s = feedback.velocity_rad_s.value;
+    if (dm_devices_[0]) {
+        const auto& device = *dm_devices_[0];
+        e.limits = device.limits();
+        e.enabled = device.enabled(now) && !device.faulted(now);
+        e.feedback_valid = feedback.position_rad.validity == Validity::valid &&
+            feedback.velocity_rad_s.validity == Validity::valid;
+        e.native_position_rad = device.state().feedback.value.position_rad;
+        // Require the microsecond CAN arrival timestamp, not a relabelled host snapshot.
+        const auto received = feedback_times_[domain_index(Domain::pitch)];
+        e.feedback_age_us = received ? at.us-received->us : 0xffffffffu;
+        const auto p = drivers::dm_encode_position(e.limits, e.native_target_rad);
+        const auto k = drivers::dm_encode_kp(e.kp);
+        const auto d = drivers::dm_encode_kd(e.kd);
+        const auto v = drivers::dm_encode_velocity(e.limits, 0.0f);
+        e.feedback_valid = e.feedback_valid && p && k && d && v;
+        e.native_target_rad = p ? drivers::dm_decode_position(e.limits, *p).value_or(0.0f) : 0.0f;
+        e.encoded_kp = k ? drivers::dm_decode_kp(*k).value_or(0.0f) : 0.0f;
+        e.encoded_kd = d ? drivers::dm_decode_kd(*d).value_or(0.0f) : 0.0f;
+        e.encoded_velocity = v ? drivers::dm_decode_velocity(e.limits, *v).value_or(0.0f) : 0.0f;
+    }
+    return e;
+}
+
+bool SentinelExecutor::start_pitch_identification(PitchIdentificationRecipe recipe,
+    Tick now, const SentinelApp& app) noexcept {
+    if (!assembled_ || !pitch_identification_available_ || !config_.pitch_identification ||
+        !pitch_enable_confirmed_) { return false; }
+    const auto at = clock_ ? clock_() : MicroTick{now.ms*1000u};
+    const auto& joint = config_.joints[joint_index(Domain::pitch)];
+    const auto& policy = *config_.pitch_identification;
+    if (!joint.min_rad || !joint.max_rad || policy.min_rad < *joint.min_rad ||
+        policy.max_rad > *joint.max_rad || !config_.dm[0].limits ||
+        policy.max_expected_torque_nm > config_.dm[0].limits->torque_max_nm) { return false; }
+    // 采集门槛: 策略要求采集或已绑定记录器时, 同 run 的连续 control 域 6 流必须已就绪,
+    // 且剩余窗口能容纳整段激励外加 2000us 收尾余量. 只看查询, 不改写记录器状态.
+    if (policy.require_capture || pitch_recorder_ != nullptr) {
+        if (pitch_recorder_ == nullptr || !pitch_recorder_->pitch_stream_ready(
+            recipe.run_id, recipe.duration_us() + 2000u, at)) { return false; }
+    }
+    return pitch_identification_.start(policy, recipe, pitch_identification_evidence(now, at, app), at);
+}
+
+bool SentinelExecutor::pitch_capture_healthy(MicroTick at) const noexcept {
+    if (!config_.pitch_identification) { return true; }
+    if (!config_.pitch_identification->require_capture && pitch_recorder_ == nullptr) { return true; }
+    // run 由本次激励绑定; 记录器侧同 run/无丢条/未过截止任一不成立即视为采集不健康.
+    return pitch_recorder_ != nullptr &&
+        pitch_recorder_->pitch_stream_healthy(pitch_identification_.run_id(), at);
+}
+
+bool SentinelExecutor::reset_pitch_identification(Tick now, const SentinelApp& app) noexcept {
+    const bool disabled = dm_devices_[0] && dm_devices_[0]->online(now) &&
+        !dm_devices_[0]->enabled(now) && !dm_devices_[0]->faulted(now);
+    return pitch_identification_.reset(!app.target(Domain::pitch), disabled);
+}
+
 bool SentinelExecutor::send_pitch_frame(const transport::CanFrame& frame) noexcept {
     const auto result = bus_for(config_.dm[0].bus).try_send(frame);
     const bool accepted = result == transport::SendResult::accepted;
@@ -551,7 +678,7 @@ bool SentinelExecutor::send_pitch_frame(const transport::CanFrame& frame) noexce
         result == transport::SendResult::busy ? drivers::DjiGroupStatus::busy : drivers::DjiGroupStatus::error;
     if (accepted) {
         ++pitch_stats_.submitted;
-        if (clock_) { pitch_stats_.last_submitted = clock_(); }
+        pitch_stats_.last_submitted = clock_ ? clock_() : pitch_stats_.last_computed;
     } else { ++pitch_stats_.tx_failed; }
     return accepted;
 }
@@ -590,7 +717,7 @@ void SentinelExecutor::step_pitch(Tick now, const SentinelApp& app, bool force_s
     }
     auto& device = *dm_devices_[0];
     const auto& execution = app.snapshot().executions[domain_index(config_.dm[0].domain)];
-    if (!execution.execute || force_stop) {
+    if (!execution.execute || force_stop || pitch_identification_.latched()) {
         // 撤输出 = 显式 disable 请求. 是否发送取决于**当前观测状态**, 不取决于本进程是否
         // 发过 enable, 也不被历史 latch 永久阻断: MCU/电调可以独立重启, 接入时设备可能已
         // 经 Enabled; 发送被 accepted 不当作状态确认, 只有新鲜反馈确认 Disabled (且非故障
@@ -651,20 +778,54 @@ void SentinelExecutor::step_pitch(Tick now, const SentinelApp& app, bool force_s
     const auto target = app.target(config_.dm[0].domain);
     if (!target) { return; }
     const auto& joint = config_.joints[joint_index(config_.dm[0].domain)];
+    // 提交前再复核一次同 run 的采集健康: 不依赖 step() 的调用顺序, 采集不健康时本周期
+    // 不构造也不提交 MIT 目标, 只走已有撤输出路径.
+    if (pitch_identification_.active() &&
+        !pitch_capture_healthy(clock_ ? clock_() : MicroTick{now.ms*1000u})) {
+        pitch_identification_.trip(PitchIdentificationFault::capture);
+        step_pitch(now, app, true);
+        return;
+    }
+    // 常数重力前馈抵消负载自重下垂; 辨识激励在此之上叠加, 保持方波相对工作点的线性.
+    const float gravity_ff = config_.dm[0].gravity_ff_nm.value_or(0.0f);
+    const float excitation_nm = pitch_identification_.active() ? pitch_identification_.requested_nm() : 0.0f;
+    const float ff_nm = gravity_ff + excitation_nm;
     const auto command = drivers::DmMitCommand{target->value + joint.zero_offset_rad.value_or(0.0f),
-        0.0f, config_.dm[0].mit_kp.value_or(0.0f), config_.dm[0].mit_kd.value_or(0.0f), 0.0f};
+        0.0f, config_.dm[0].mit_kp.value_or(0.0f), config_.dm[0].mit_kd.value_or(0.0f), ff_nm};
     const auto frame = device.encode_mit(command);
     // 真编码拒绝回灌既有域失效入口; 反馈恢复不再自动重试同一份旧意图.
     if (!frame) {
         ++stats_.target_rejections;
         rejected_[domain_index(config_.dm[0].domain)] = true;
+        pitch_last_mit_status_ = drivers::DjiGroupStatus::invalid_output;
+        if (pitch_identification_.active()) {
+            pitch_identification_.trip(PitchIdentificationFault::torque);
+            step_pitch(now, app, true);
+        }
         return;
     }
-    if (!pitch_output_fresh()) { return; }
+    if (!pitch_output_fresh()) {
+        pitch_last_mit_status_ = drivers::DjiGroupStatus::stale_output;
+        if (pitch_identification_.active()) {
+            pitch_identification_.trip(PitchIdentificationFault::timing);
+            step_pitch(now, app, true);
+        }
+        return;
+    }
+    const auto raw_torque = drivers::dm_encode_torque(device.limits(), command.torque_nm);
+    pitch_last_encoded_feedforward_nm_ = raw_torque ? drivers::dm_decode_torque(device.limits(), *raw_torque) : std::nullopt;
+    pitch_last_mit_attempt_at_ = clock_ ? clock_() : pitch_stats_.last_computed;
     if (send_pitch_frame(*frame)) {
+        pitch_last_mit_submitted_at_ = pitch_stats_.last_submitted;
         ++stats_.dm_command_sent;
+        pitch_last_mit_status_ = drivers::DjiGroupStatus::accepted;
     } else {
         ++stats_.dm_tx_error;
+        pitch_last_mit_status_ = pitch_stats_.last_result;
+        if (pitch_identification_.active()) {
+            pitch_identification_.trip(PitchIdentificationFault::transmit);
+            step_pitch(now, app, true);
+        }
     }
 }
 
@@ -678,6 +839,18 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
     if (!assembled_) { return; }
     const auto control_start = clock_ ? clock_() : MicroTick{};
     const auto at = now_us.value_or(MicroTick{now.ms * 1000u});
+    if (pitch_identification_.active()) {
+        // 采集门槛先于波形推进与输出: 采集中断/被替换/满队列/提前结束时立即锁存并撤输出,
+        // 不依赖下一次主机查询. 只要不在本周期推进波形, 不把未采集的激励当成有效样本.
+        if (!pitch_capture_healthy(at)) {
+            pitch_identification_.trip(PitchIdentificationFault::capture);
+        } else if (!std::isfinite(dt_s) || dt_s <= 0.0f) {
+            pitch_identification_.trip(PitchIdentificationFault::timing);
+        } else {
+            static_cast<void>(pitch_identification_.tick(pitch_identification_evidence(now, at, app), at));
+        }
+    }
+    if (pitch_identification_.latched()) { rejected_[domain_index(Domain::pitch)] = true; }
     const bool bad_dt = !std::isfinite(dt_s) || dt_s <= 0.0f;
     std::array<bool, group_capacity> force{};
     for (std::size_t i = 0; i < domain_count; ++i) {
@@ -856,8 +1029,16 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
     const auto pitch = domain_index(Domain::pitch);
     const bool stop_pitch = was_executing_[pitch] && !app.snapshot().executions[pitch].execute;
     was_executing_[pitch] = app.snapshot().executions[pitch].execute;
-    const auto scheduled = pitch_clock_.poll(at, config_.runtime.pitch, stop_pitch, MicroTick{now.ms * 1000u});
-    if (config_.dm[0].installed && (scheduled.due || scheduled.invalid_time || bad_dt)) {
+    const auto scheduled = pitch_clock_.poll(at, config_.runtime.pitch,
+        stop_pitch || pitch_identification_.latched(), MicroTick{now.ms * 1000u});
+    pitch_step_ = scheduled;
+    if (bad_dt) { pitch_step_ = {true, true, dt_s}; }
+    if (config_.dm[0].installed && (pitch_step_.due || pitch_step_.invalid_time || bad_dt)) {
+        pitch_step_.due = true;
+        pitch_last_encoded_feedforward_nm_ = std::nullopt;
+        pitch_last_mit_attempt_at_.reset();
+        pitch_last_mit_submitted_at_.reset();
+        pitch_last_mit_status_ = drivers::DjiGroupStatus::not_sent;
         pitch_stats_.bus = config_.dm[0].bus;
         pitch_stats_.id = config_.dm[0].can_id.value_or(0); // 设备 ID, 查询帧自身为 0x7ff
         ++pitch_stats_.computations;
@@ -868,8 +1049,13 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
         if (scheduled.invalid_time || bad_dt) {
             ++pitch_stats_.invalid_steps;
             rejected_[pitch] = true;
+            if (pitch_identification_.active()) {
+                pitch_identification_.trip(PitchIdentificationFault::timing);
+            }
         }
         step_pitch(now, app, scheduled.invalid_time || bad_dt);
+    } else {
+        pitch_step_.due = false;
     }
     if (clock_) {
         stats_.tx_last_us = clock_().us - tx_start.us;

@@ -1,20 +1,21 @@
 """正式 APP 维护控制台的数据层; 不依赖图形库, 不预置实车控制参数."""
 from __future__ import annotations
 
+import math
 from collections import deque
 from copy import deepcopy
-import math
 from pathlib import Path
-import time
 
-from sentinel_async import AsyncSentinelClient, OutcomeUnknown
 import sentinel_client as wire
-from sentinel_test import PARTS as BASE_PARTS, accepted
+from sentinel_async import AsyncSentinelClient, OutcomeUnknown
+from sentinel_test import PARTS as BASE_PARTS
+from sentinel_test import accepted
+from sentinel_pitch_tuning import PitchTuningController
 
 PARTS = {**BASE_PARTS, 'bench': ('main_yaw', 'pitch', 'friction_left', 'trigger')}
 
 DOMAIN_LABELS = dict(zip(wire.DOMAINS, ('左前轮', '右前轮', '左后轮', '右后轮',
-    '主 yaw', 'fire yaw', 'pitch', '左摩擦轮', '右摩擦轮', '拨弹')))
+    '主 yaw', 'fire yaw', 'pitch', '左摩擦轮', '右摩擦轮', '拨弹'), strict=False))
 PART_LABELS = {'gimbal': '云台', 'chassis': '底盘', 'shooter': '发射机构', 'bench': '四电机台架'}
 DJI_FIELDS = {1: ('速度环 Kp', 'A/(rad/s)'), 2: ('速度环 Ki', 'A/rad'), 3: ('速度环 Kd', 'A/(rad/s²)'),
     4: ('电流上限', 'A'), 5: ('协议输出上限', 'raw'), 6: ('轴侧速度上限', 'rad/s'),
@@ -70,7 +71,7 @@ def target_packet(mechanism, drafts, *, twist=None, frame='joint'):
         if mechanism != 'chassis' or points or len(twist) != 3:
             raise ValueError('底盘 twist 与逐轮目标二选一')
         twist = tuple(finite(value) for value in twist)
-    return dict(setpoints=points, twist=twist, main_yaw_frame=frame)
+    return {'setpoints': points, 'twist': twist, 'main_yaw_frame': frame}
 
 
 def page_fresh(page, now, lifetime=.6):
@@ -95,7 +96,8 @@ class LiveHistory:
         if key == self.identity:
             return
         if self.identity and key[0] != self.identity[0]:
-            self.samples.clear(); self.origin = None
+            self.samples.clear()
+            self.origin = None
         self.identity = key
         stamp = page['received_at_monotonic']
         if self.origin is None:
@@ -104,7 +106,7 @@ class LiveHistory:
 
     def joint(self, domain, now):
         page = self.pages.get(0)
-        if not self.connected or not page_fresh(page, now):
+        if not self.connected or page is None or not page_fresh(page, now):
             return None
         return page.get('joints', {}).get(domain)
 
@@ -119,9 +121,9 @@ class LiveHistory:
             # 机械角统一取快页; 惯性位置执行仍使用域页的同坐标系测量.
             if entry['domain'] in PARTS['gimbal'] and not (
                     entry['mode'] == 'position' and entry['measured_frame'] != 'joint'):
-                joint = fast.get('joints', {}).get(entry['domain']) if fresh else None
+                joint = fast.get('joints', {}).get(entry['domain']) if fresh and fast is not None else None
                 entry['measurement_valid'] = bool(joint and joint['position_valid'])
-                entry['measurement'] = joint['angle_rad'] if entry['measurement_valid'] else math.nan
+                entry['measurement'] = joint['angle_rad'] if joint is not None and entry['measurement_valid'] else math.nan
                 entry['measured_frame'] = 'joint'
         return out
 
@@ -138,11 +140,17 @@ class LiveHistory:
             entry = next(e for e in page['domains'] if e['domain'] == domain)
             signature = (entry['mode'], entry['adopted_frame'], page['reference_epoch'])
             if last is not None and (signature != last[1] or stamp-last[0] > .6):
-                times.append(stamp); targets.append(math.nan); measurements.append(math.nan); errors.append(math.nan)
+                times.append(stamp)
+                targets.append(math.nan)
+                measurements.append(math.nan)
+                errors.append(math.nan)
             target = entry['target'] if entry['execute'] and entry['requested_frame'] is not None else math.nan
             measured = entry['measurement'] if entry['measurement_valid'] else math.nan
             error = target-measured if entry['adopted_frame'] == entry['measured_frame'] else math.nan
-            times.append(stamp); targets.append(target); measurements.append(measured); errors.append(error)
+            times.append(stamp)
+            targets.append(target)
+            measurements.append(measured)
+            errors.append(error)
             last = stamp, signature
         return times, targets, measurements, errors
 
@@ -157,10 +165,25 @@ class MaintenanceSession:
         self.requested_authority = False
         self.last_request = None
         self.note = ''
+        self.assistance = PitchTuningController(peer)
+
+    def require_manual(self):
+        if self.assistance.active:
+            raise ValueError('辅助调参占用目标控制, 请先停止后再人工修改')
+
+    def start_assisted(self, plan, directory, *, capture=False, wait_s=30.0):
+        self.require_manual()
+        if self.mechanism != 'gimbal' or 'pitch' not in self.installed_domains:
+            raise ValueError('辅助调参仅支持已装配 Pitch 的云台 APP')
+        self.stop()
+        self.assistance.start(plan, directory, capture=capture, wait_s=wait_s)
+        self.last_request = None
+        self.note = '辅助调参接管 Pitch; 结束或停止会释放保持力矩'
 
     @classmethod
     def connect(cls, transport, mechanism, log_path=None):
-        peer = AsyncSentinelClient(transport, target_hz=50, fast_hz=50, log_path=log_path)
+        # 快页用于显示, 保留 20 Hz 作为显示策略; 串口性能须另行验证.
+        peer = AsyncSentinelClient(transport, target_hz=50, fast_hz=20, log_path=log_path)
         session = cls(peer, mechanism)
         try:
             peer.hello().result(timeout=2)
@@ -179,11 +202,13 @@ class MaintenanceSession:
         return deepcopy(self.parameters)
 
     def authorize(self):
+        self.require_manual()
         reply = accepted(self.peer.authorize(True, 'maintenance').result(timeout=2))
         self.requested_authority = True
         return reply
 
     def submit(self, drafts, *, twist=None, frame='joint', permit=False):
+        self.require_manual()
         if any(domain not in self.installed_domains for domain in drafts):
             raise ValueError('目标包含未装配电机; 请只选择已装配域')
         packet = target_packet(self.mechanism, drafts, twist=twist, frame=frame)
@@ -208,6 +233,8 @@ class MaintenanceSession:
         self.peer.set_target_source(source)
 
     def stop(self):
+        if self.assistance.active:
+            self.assistance.stop()
         self.peer.set_target_source(None)
         if self.mechanism == 'shooter':
             self.peer.publish_permit(False, 1)
@@ -216,11 +243,13 @@ class MaintenanceSession:
 
     def release(self):
         self.stop()
+        self.assistance.close()
         reply = accepted(self.peer.authorize(False, 'maintenance').result(timeout=2))
         self.requested_authority = False
         return reply
 
     def align(self, domain, value):
+        self.require_manual()
         if domain not in self.domains or domain not in PARTS['gimbal']:
             raise ValueError('只能确认所选云台关节的已知角度')
         return accepted(self.peer.align(domain, finite(value), kind='joint_reference').result(timeout=2))
@@ -238,6 +267,7 @@ class MaintenanceSession:
         return self.write_parameter(param_id, value, physical=True)
 
     def write_parameter(self, param_id, value, *, physical=False):
+        self.require_manual()
         entry = self.read_parameter(param_id)
         if physical:
             slot, local = param_id >> 8, param_id & 255
@@ -262,8 +292,8 @@ class MaintenanceSession:
         try:
             actual = self.read_parameter(param_id)
         except Exception as error:
-            return dict(ack=reply, readback=None, unknown=unknown, read_error=str(error))
-        return dict(ack=reply, readback=actual, unknown=unknown, read_error=None)
+            return {'ack': reply, 'readback': None, 'unknown': unknown, 'read_error': str(error)}
+        return {'ack': reply, 'readback': actual, 'unknown': unknown, 'read_error': None}
 
     def save_readback(self, path):
         entries = self.refresh_parameters()
@@ -285,6 +315,7 @@ class MaintenanceSession:
 
     def close(self):
         try:
+            self.assistance.close()
             if self.requested_authority and self.peer.snapshot()['connected']:
                 self.release()
         finally:

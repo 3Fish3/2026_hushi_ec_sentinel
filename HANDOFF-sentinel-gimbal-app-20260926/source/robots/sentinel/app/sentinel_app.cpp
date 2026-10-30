@@ -569,10 +569,15 @@ AcceptResult SentinelApp::accept_targets(const TargetSnapshot& snapshot, Tick no
                     ++rejected_packets_; return AcceptResult::limit_violation;
                 }
             }
-            if (joint.min_rad && joint.max_rad &&
-                (setpoint->value < *joint.min_rad || setpoint->value > *joint.max_rad)) {
-                ++rejected_packets_;
-                return AcceptResult::limit_violation;
+            // 目标允许范围: 若配置了操作限幅(command带), 用它; 否则退回机械止点.
+            // 机械止点本身仍只用于反馈越界故障保护, 目标一律受更窄的带约束.
+            if (joint.min_rad && joint.max_rad) {
+                const float band_lo = joint.command_min_rad.value_or(*joint.min_rad);
+                const float band_hi = joint.command_max_rad.value_or(*joint.max_rad);
+                if (setpoint->value < band_lo || setpoint->value > band_hi) {
+                    ++rejected_packets_;
+                    return AcceptResult::limit_violation;
+                }
             }
         }
     }

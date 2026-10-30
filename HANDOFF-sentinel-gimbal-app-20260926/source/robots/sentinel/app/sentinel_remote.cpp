@@ -118,6 +118,16 @@ RemoteCommand RemoteMapper::step(const std::optional<input::Dr16Snapshot>& sampl
         purposes_ = {};
         x_purpose_ = AxisPurpose::none;
         y_purpose_ = AxisPurpose::none;
+        if (config_.layout == RemoteLayout::gimbal_validation && intent_ == SourceIntent::local) {
+            // 回中等待期间也保持接管角, 避免先撤力矩再等待摇杆.
+            for (const auto domain : {Domain::main_yaw, Domain::fire_yaw, Domain::pitch}) {
+                const auto angle = actual_angle_rad[index(domain)];
+                if (!angle || !std::isfinite(*angle)) { continue; }
+                auto& held = purposes_[purpose_index(angle_purpose(domain))];
+                held.target_rad = *angle;
+                held.target_valid = true;
+            }
+        }
     }
     // 右拨杆: 下=人工整车停止 (锁存到拨回运行档), 中=普通运行, 上=本地底盘旋转操作.
     manual_stop_ = sample->switch_right == drivers::Dr16Switch::down;
@@ -156,7 +166,13 @@ RemoteCommand RemoteMapper::step(const std::optional<input::Dr16Snapshot>& sampl
     }
 
     const auto previous_layer = layer_;
-    layer_ = classify(sample->ch4);
+    if (config_.layout == RemoteLayout::gimbal_validation) {
+        // 验证档不依赖已失效的拨轮: 右中操纵主 yaw, 右上操纵发射 yaw; pitch 始终共用右 Y.
+        out.rotation_gear = false;
+        layer_ = sample->switch_right == drivers::Dr16Switch::up ? Ch4Layer::fire_yaw : Ch4Layer::main_gimbal;
+    } else {
+        layer_ = classify(sample->ch4);
+    }
     if (layer_ != previous_layer) { ++diagnostics_.layer_changes; }
     out.layer = layer_;
 
@@ -222,7 +238,8 @@ RemoteCommand RemoteMapper::step(const std::optional<input::Dr16Snapshot>& sampl
         if (!state.target_valid) { return; }
         out.targets.domains[index(domain)] =
             DomainSetpoint{control::ControlMode::position, state.target_rad, 0,
-                domain == Domain::main_yaw ? YawFrame::local_inertial : YawFrame::joint};
+                domain == Domain::main_yaw && config_.layout != RemoteLayout::gimbal_validation
+                    ? YawFrame::local_inertial : YawFrame::joint};
     };
 
     // 角度用途: 目标角速度 × dt 积分成角度目标, 回中保持目标角.
@@ -240,7 +257,8 @@ RemoteCommand RemoteMapper::step(const std::optional<input::Dr16Snapshot>& sampl
         if (active && dt_s > 0.0f) { state.target_rad += clampf(axis, 1.0f) * rate_max * dt_s; }
         out.targets.domains[index(domain)] =
             DomainSetpoint{control::ControlMode::position, state.target_rad, 0,
-                domain == Domain::main_yaw ? YawFrame::local_inertial : YawFrame::joint};
+                domain == Domain::main_yaw && config_.layout != RemoteLayout::gimbal_validation
+                    ? YawFrame::local_inertial : YawFrame::joint};
     };
 
     switch (x_purpose) {

@@ -126,6 +126,14 @@ public:
     [[nodiscard]] bool set_dm_mit_gains(float kp, float kd) noexcept;
     [[nodiscard]] float dm_mit_kp() const noexcept { return config_.dm[0].mit_kp.value_or(0.0f); }
     [[nodiscard]] float dm_mit_kd() const noexcept { return config_.dm[0].mit_kd.value_or(0.0f); }
+    [[nodiscard]] bool pitch_identification_available() const noexcept { return pitch_identification_available_; }
+    // 连续采集流绑定入口: 绑定后采集健康成为激励的强制门槛, 解除绑定不能用 nullptr 绕过
+    // (策略 require_capture 仍会拒绝启动). 不推进记录器状态, 不发帧.
+    void bind_pitch_recorder(recording::Recorder* recorder) noexcept { pitch_recorder_ = recorder; }
+    [[nodiscard]] bool start_pitch_identification(PitchIdentificationRecipe recipe, Tick now, const SentinelApp& app) noexcept;
+    void cancel_pitch_identification() noexcept { pitch_identification_.trip(PitchIdentificationFault::cancelled); }
+    [[nodiscard]] bool reset_pitch_identification(Tick now, const SentinelApp& app) noexcept;
+    [[nodiscard]] const PitchIdentification& pitch_identification() const noexcept { return pitch_identification_; }
     // pitch 的使能/失能请求状态: 用于观测"请求已发"与"设备已确认"的区别.
     [[nodiscard]] bool pitch_enable_requested() const noexcept { return pitch_enable_requested_; }
     [[nodiscard]] bool pitch_disable_requested() const noexcept { return pitch_disable_requested_; }
@@ -157,6 +165,9 @@ private:
     [[nodiscard]] bool feedback_ready(const DomainRuntime& runtime, Tick now) const noexcept;
     [[nodiscard]] std::optional<float> branch_for(
         Domain domain, float requested_rad, Tick now) noexcept;
+    [[nodiscard]] PitchIdentificationEvidence pitch_identification_evidence(Tick now, MicroTick at, const SentinelApp& app) const noexcept;
+    // 采集门槛是否成立: 未要求采集时恒真; 要求时必须是同 run 的活动连续 control 域 6 流.
+    [[nodiscard]] bool pitch_capture_healthy(MicroTick at) const noexcept;
     void step_pitch(Tick now, const SentinelApp& app, bool force_stop = false) noexcept;
     void query_pitch() noexcept;
     [[nodiscard]] bool send_pitch_frame(const transport::CanFrame& frame) noexcept;
@@ -195,5 +206,13 @@ private:
     // 有界重试退避: 撤输出期间至多每个重试间隔发一次 disable, 不因历史失败永久停止尝试.
     bool pitch_disable_attempted_{};
     Tick pitch_last_disable_at_{};
+    PitchIdentification pitch_identification_{};
+    bool pitch_identification_available_{};
+    recording::Recorder* pitch_recorder_{};
+    ScheduledStep pitch_step_{};
+    std::optional<float> pitch_last_encoded_feedforward_nm_{};
+    std::optional<MicroTick> pitch_last_mit_attempt_at_{};
+    std::optional<MicroTick> pitch_last_mit_submitted_at_{};
+    drivers::DjiGroupStatus pitch_last_mit_status_{drivers::DjiGroupStatus::not_sent};
 };
 } // 命名空间 ec::sentinel::app

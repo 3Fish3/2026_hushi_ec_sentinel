@@ -7,20 +7,40 @@ publish_targets 的每次调用代表新的意图; 尚未发送的旧值被覆�
 """
 from __future__ import annotations
 
-from collections import OrderedDict, deque
-from concurrent.futures import Future
-from copy import deepcopy
-from dataclasses import dataclass
+import importlib
 import json
 import math
-from pathlib import Path
 import queue
 import secrets
 import struct
 import threading
 import time
+from collections import OrderedDict, deque
+from concurrent.futures import Future
+from copy import deepcopy
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import sentinel_client as wire
+
+# 单 UART 连续流解码器由 pitch stream 模块拥有; 这里只做分发, 不复制布局解析.
+# 缺失属于部署依赖, 由显式采集故障暴露, 不影响既有 v3 路径加载.
+def _default_pitch_decoder() -> Any:
+    try:
+        decoder: Any = importlib.import_module('sentinel_pitch_stream').decode_pitch_stream_packet
+    except (ImportError, AttributeError):
+        return None
+    return decoder if callable(decoder) else None
+
+# 原始连续流请求/应答沿用 sentinel_raw 的外层型式: '<4B2I' 请求, 0xB2 应答, 0xB3 数据.
+PITCH_STREAM = 0x32
+PITCH_STREAM_ACK = 0xB2
+PITCH_STREAM_DATA = 0xB3
+PITCH_STREAM_PROFILE = 3
+PITCH_STREAM_DOMAIN = 6
+PITCH_STREAM_OPS = {'start': 1, 'stop': 2}
+PITCH_STREAM_DATA_OP = 3
 
 
 class OutcomeUnknown(wire.ProtocolError):
@@ -44,8 +64,8 @@ class _WireLog:
 
     def record(self, direction, data):
         self.ordinal += 1
-        record = dict(ordinal=self.ordinal, monotonic_s=time.monotonic(), direction=direction,
-                      wire_hex=data.hex())
+        record = {'ordinal': self.ordinal, 'monotonic_s': time.monotonic(), 'direction': direction,
+                  'wire_hex': data.hex()}
         try:
             self.queue.put_nowait(record)
         except queue.Full:
@@ -54,18 +74,18 @@ class _WireLog:
     def _run(self):
         last = 0
         try:
-            self.file.write(json.dumps(dict(event='begin', protocol=wire.PROTOCOL_VERSION,
-                                           monotonic_s=time.monotonic()))+'\n')
+            self.file.write(json.dumps({'event': 'begin', 'protocol': wire.PROTOCOL_VERSION,
+                                        'monotonic_s': time.monotonic()})+ '\n')
             while not self.stop.is_set() or not self.queue.empty():
                 try:
                     record = self.queue.get(timeout=0.05)
                 except queue.Empty:
                     continue
                 if record['ordinal'] != last+1:
-                    self.file.write(json.dumps(dict(event='gap', count=record['ordinal']-last-1))+'\n')
+                    self.file.write(json.dumps({'event': 'gap', 'count': record['ordinal']-last-1})+ '\n')
                 self.file.write(json.dumps(record)+'\n')
                 last = record['ordinal']
-            self.file.write(json.dumps(dict(event='end', total=self.ordinal, dropped=self.dropped))+'\n')
+            self.file.write(json.dumps({'event': 'end', 'total': self.ordinal, 'dropped': self.dropped})+ '\n')
         except OSError as error:
             self.error = str(error)
         finally:
@@ -100,9 +120,34 @@ class _Pending:
     attempts: int = 1
 
 
+@dataclass(frozen=True)
+class CaptureFault:
+    """不可变采集故障: 一旦记录就保持到下一次显式 start 的新采集身份."""
+    code: str
+    detail: str
+    run: int
+    at_monotonic: float
+
+
+@dataclass
+class _StreamRequest:
+    op: int
+    run: int
+    duration_us: int
+    future: Future
+
+
+@dataclass
+class _StreamPending:
+    request: _StreamRequest
+    frame_sequence: int
+    message: bytes
+    deadline: float
+
+
 class AsyncSentinelClient:
     def __init__(self, transport, *, target_hz=100.0, fast_hz=100.0,
-                 timeout_s=0.15, attempts=3, log_path=None):
+                 timeout_s=0.15, attempts=3, log_path=None, pitch_decoder=None):
         if not (math.isfinite(target_hz) and target_hz > 0 and math.isfinite(fast_hz) and fast_hz >= 0
                 and math.isfinite(timeout_s) and timeout_s > 0 and attempts >= 1):
             raise ValueError('invalid link cadence/timeout')
@@ -123,10 +168,23 @@ class AsyncSentinelClient:
         self._goal = self._permit = None
         self._source = None
         self._source_generation = 0
-        self._stats = dict(sent=0, replies=0, unmatched=0, invalid_replies=0, retries=0,
-                           superseded=0, stream_timeouts=0, dropped_epochs=0)
-        self._state = dict(connected=False, session=0, config_epoch=0, reference_epoch=0,
-                           status={}, diagnostics={}, error='', last_change=None, last_target_ack=None)
+        # 连续流身份在首个字节之前绑定, 数据可能先于 start ACK 到达.
+        self._pitch_decoder = _default_pitch_decoder() if pitch_decoder is None else pitch_decoder
+        self._pitch_requests: deque = deque()
+        self._pitch_pending: dict = {}
+        self._pitch_sink = None
+        self._pitch: dict[str, Any] = {
+            'run': None, 'op': 0, 'duration_us': 0, 'active': False, 'session': 0,
+            'confirmed_by': None, 'packets': 0, 'records': 0, 'last_status': {},
+            'last_packet_monotonic': None, 'started_at_monotonic': None,
+            'stopped_at_monotonic': None, 'last_ack': None, 'fault': None,
+            'last_sequence': -1, 'last_generated': 0, 'draining': False, 'finished': False}
+        self._stats = {'sent': 0, 'replies': 0, 'unmatched': 0, 'invalid_replies': 0, 'retries': 0,
+                       'superseded': 0, 'stream_timeouts': 0, 'dropped_epochs': 0}
+        self._state: dict[str, Any] = {
+            'connected': False, 'session': 0, 'config_epoch': 0, 'reference_epoch': 0,
+            'status': {}, 'diagnostics': {}, 'error': '', 'last_change': None, 'last_target_ack': None,
+            'target_rejections': 0, 'last_target_rejection': None, 'last_target_sent_sequence': 0}
         self._page_sequences = {}
         try:
             self._log = _WireLog(log_path) if log_path else None
@@ -143,6 +201,8 @@ class AsyncSentinelClient:
             result = deepcopy(self._state)
             result['statistics'] = dict(self._stats)
             result['change_pending'] = self._change_active
+            result['pitch_stream'] = deepcopy(self._pitch)
+            result['pitch_stream_error'] = self._pitch_error_locked()
         if self._log:
             result.update(log_dropped=self._log.dropped, log_error=self._log.error)
         return result
@@ -166,29 +226,286 @@ class AsyncSentinelClient:
         self._wake.set()
         return future
 
+    def _pitch_error_locked(self):
+        fault = self._pitch['fault']
+        return '' if fault is None else f'{fault.code}: {fault.detail}'
+
     def hello(self, nonce=None):
-        return self._post(wire.HELLO, dict(nonce=secrets.randbits(32) if nonce is None else nonce))
+        return self._post(wire.HELLO, {'nonce': secrets.randbits(32) if nonce is None else nonce})
 
     def authorize(self, grant=True, source='maintenance'):
-        return self._post(wire.AUTHORIZE, dict(grant=grant, source=source), True)
+        return self._post(wire.AUTHORIZE, {'grant': grant, 'source': source}, True)
 
     def align(self, domain, value, *, kind='joint_reference', reference_epoch=None):
         if reference_epoch is None:
             reference_epoch = self.snapshot()['reference_epoch']
-        return self._post(wire.ALIGN, dict(domain=domain, value=value, kind=kind,
-                                           reference_epoch=reference_epoch), True)
+        return self._post(wire.ALIGN, {'domain': domain, 'value': value, 'kind': kind,
+                                       'reference_epoch': reference_epoch}, True)
 
     def param_write(self, param_id, value):
-        return self._post(wire.PARAM_WRITE, dict(param_id=param_id, value=value), True)
+        return self._post(wire.PARAM_WRITE, {'param_id': param_id, 'value': value}, True)
 
     def param_read(self, param_id=0xffff, offset=0):
-        return self._post(wire.PARAM_READ, dict(param_id=param_id, offset=offset))
+        return self._post(wire.PARAM_READ, {'param_id': param_id, 'offset': offset})
 
     def status(self, page=0):
-        return self._post(wire.STATUS, dict(page=page))
+        return self._post(wire.STATUS, {'page': page})
 
     def diagnostics(self, page=0):
-        return self._post(wire.DIAGNOSTICS, dict(page=page))
+        return self._post(wire.DIAGNOSTICS, {'page': page})
+
+    def pitch_identification(self, op, *, run_id=0, amplitude_nm=0.0, half_period_us=0,
+                             baseline_us=0, cycles=0, final_hold_us=0,
+                             config_epoch=None, reference_epoch=None):
+        """复用既有 v3 编解码; query 是只读请求, start/cancel/reset 是变更.
+
+        不发送任意电流、不写增益、不改 TTL; 代次缺省取当前会话快照.
+        """
+        op_code = wire.PITCH_IDENT_OPS.index(op) if isinstance(op, str) else int(op)
+        snap = self.snapshot()
+        values = {'op': op_code,
+                  'config_epoch': snap['config_epoch'] if config_epoch is None else config_epoch,
+                  'reference_epoch': snap['reference_epoch'] if reference_epoch is None else reference_epoch,
+                  'run_id': run_id, 'amplitude_nm': amplitude_nm, 'half_period_us': half_period_us,
+                  'baseline_us': baseline_us, 'cycles': cycles, 'final_hold_us': final_hold_us}
+        return self._post(wire.PITCH_IDENTIFICATION, values, op_code != 0)
+
+    # ------------------------------------------------------------------
+    # 单 UART 连续流: 原始 0x32 请求 + 0xB2 应答 + 0xB3 非请求数据.
+    # ------------------------------------------------------------------
+    def set_pitch_stream_sink(self, callback):
+        """安装/清除连续流汇; 回调只在 UART 线程被调用, 必须只做入队."""
+        with self._lock:
+            self._pitch_sink = callback
+
+    def pitch_stream_status(self):
+        """返回已完成的只读快照 Future; 驱动轮询不会阻塞持续保持."""
+        future = Future()
+        with self._lock:
+            future.set_result(deepcopy(dict(self._pitch, error=self._pitch_error_locked())))
+        return future
+
+    def start_pitch_stream(self, run, duration_us):
+        if type(run) is not int or not 0 < run <= 0xffffffff:
+            raise wire.ProtocolError(f'invalid capture run: {run!r}')
+        if type(duration_us) is not int or not 0 < duration_us < 0x80000000:
+            raise wire.ProtocolError(f'invalid capture duration: {duration_us!r}')
+        future = Future()
+        with self._lock:
+            if self._stop.is_set():
+                raise wire.ProtocolError('link owner closed')
+            if not self._connected:
+                raise wire.ProtocolError('hello required')
+            if self._pitch['fault'] is not None:
+                raise wire.ProtocolError('capture fault latched; explicit new handshake required')
+            previous_run = self._pitch['run']
+            final = self._pitch['last_status']
+            reusable = (previous_run is not None and self._pitch['finished'] and run > previous_run
+                        and final.get('dropped') == 0 and final.get('buffered') == 0)
+            if ((previous_run is not None and not reusable) or self._pitch['active']
+                    or self._pitch_requests or self._pitch_pending):
+                raise wire.ProtocolError('pitch capture identity already bound')
+            self._pitch.update(run=run, op=PITCH_STREAM_OPS['start'], duration_us=duration_us,
+                               active=True, session=self._session, confirmed_by=None, packets=0,
+                               records=0, last_status={}, last_packet_monotonic=None,
+                               started_at_monotonic=time.monotonic(), stopped_at_monotonic=None,
+                               last_ack=None, fault=None, last_sequence=-1,
+                               last_generated=0, draining=False, finished=False)
+            self._pitch_requests.append(_StreamRequest(PITCH_STREAM_OPS['start'], run, duration_us, future))
+        self._wake.set()
+        return future
+
+    def stop_pitch_stream(self, run):
+        if type(run) is not int or not 0 < run <= 0xffffffff:
+            raise wire.ProtocolError(f'invalid capture run: {run!r}')
+        future = Future()
+        with self._lock:
+            if self._stop.is_set():
+                raise wire.ProtocolError('link owner closed')
+            if self._pitch['run'] != run:
+                raise wire.ProtocolError(f'capture run mismatch: {self._pitch["run"]} != {run}')
+            if any(request.op == PITCH_STREAM_OPS['stop'] for request in self._pitch_requests):
+                raise wire.ProtocolError('capture stop already pending')
+            self._pitch_requests.append(_StreamRequest(PITCH_STREAM_OPS['stop'], run, 0, future))
+        self._wake.set()
+        return future
+
+    def signal_pitch_capture_fault(self, code, detail):
+        """记录汇(队列/磁盘)侧故障; 由持有 writer 的一方调用, UART 线程不被阻塞."""
+        return self._capture_fault(str(code), str(detail))
+
+    def _capture_fault(self, code, detail):
+        now = time.monotonic()
+        with self._lock:
+            if self._pitch['fault'] is not None:
+                return False
+            run = self._pitch['run']
+            fault = CaptureFault(code, detail, int(run or 0), now)
+            self._pitch.update(fault=fault, active=False, run=None, confirmed_by=None,
+                               stopped_at_monotonic=now)
+            pendings = list(self._pitch_pending.values())
+            self._pitch_pending.clear()
+            requests = list(self._pitch_requests)
+            self._pitch_requests.clear()
+            # 故障后不再续期任何目标/许可: 保持与授权都不得自动恢复.
+            self._goal = self._permit = self._source = None
+            self._source_generation += 1
+            self._state['error'] = f'pitch capture fault: {code}: {detail}'
+        error = wire.ProtocolError(f'pitch capture fault: {code}: {detail}')
+        for pending in pendings:
+            self._settle_stream_future(pending.request, error=error)
+        for request in requests:
+            self._settle_stream_future(request, error=error)
+        return True
+
+    @staticmethod
+    def _settle_stream_future(request, value=None, error=None):
+        if request.future.done():
+            return
+        if error is not None:
+            request.future.set_exception(error)
+        else:
+            request.future.set_result(value)
+
+    def _begin_stream(self, request, now):
+        profile = PITCH_STREAM_PROFILE if request.op == PITCH_STREAM_OPS['start'] else 0
+        domain = PITCH_STREAM_DOMAIN if request.op == PITCH_STREAM_OPS['start'] else 0
+        try:
+            payload = struct.pack('<4B2I', 1, request.op, profile, domain, request.run, request.duration_us)
+            self._frame = (self._frame+1) & 0xffff
+            while self._frame in self._pending or self._frame in self._pitch_pending:
+                self._frame = (self._frame+1) & 0xffff
+            message = wire.encode_frame(PITCH_STREAM, self._frame, payload)
+        except (wire.ProtocolError, ValueError, TypeError, OverflowError, struct.error) as error:
+            self._settle_stream_future(request, error=error)
+            self._capture_fault('encode', str(error))
+            return
+        self._pitch_pending[self._frame] = _StreamPending(request, self._frame, message, now+self.timeout_s)
+        self.transport.send(message)
+        self._stats['sent'] += 1
+
+    def _expire_stream(self, now):
+        with self._lock:
+            active = self._pitch['active'] and self._pitch['confirmed_by'] is not None
+            last_packet = self._pitch['last_packet_monotonic'] or self._pitch['started_at_monotonic']
+        if active and last_packet is not None and now - last_packet > 0.05:
+            self._capture_fault('stream-stale', 'no capture packet within the 50ms holding budget')
+            return
+        for pending in tuple(self._pitch_pending.values()):
+            if now < pending.deadline:
+                continue
+            del self._pitch_pending[pending.frame_sequence]
+            request = pending.request
+            if request.op == PITCH_STREAM_OPS['start']:
+                # 未确认的采集不得继续被当作可信身份.
+                self._settle_stream_future(request, error=TimeoutError('capture start not acknowledged'))
+                self._capture_fault('start-timeout', f'run {request.run} not acknowledged')
+            else:
+                self._settle_stream_future(request, error=TimeoutError('capture stop not acknowledged'))
+                with self._lock:
+                    self._pitch.update(active=False, run=None, confirmed_by=None,
+                                       stopped_at_monotonic=time.monotonic())
+                self._stats['stream_timeouts'] += 1
+
+    def _pitch_ack(self, echo, body):
+        pending = self._pitch_pending.pop(echo, None)
+        if pending is None:
+            self._stats['unmatched'] += 1
+            return
+        request = pending.request
+        decoded = self._decode_stream(body, request.run, 'ack')
+        if decoded is None:
+            self._settle_stream_future(request, error=wire.ProtocolError('pitch capture ACK unusable'))
+            return
+        status, _ = decoded
+        if status.get('op') != request.op or status.get('run') != request.run:
+            self._settle_stream_future(request, error=wire.ProtocolError(
+                f'capture ACK identity mismatch: {status.get("op")}/{status.get("run")}'))
+            self._capture_fault('stale-ack',
+                f'op={status.get("op")} run={status.get("run")} expected op={request.op} run={request.run}')
+            return
+        with self._lock:
+            self._pitch['last_ack'] = dict(status)
+            if self._pitch['confirmed_by'] is None:
+                self._pitch['confirmed_by'] = 'ack'
+        if request.op == PITCH_STREAM_OPS['stop']:
+            with self._lock:
+                # STOP ACK may precede queued data and final marker. Keep identity
+                # and sink alive until the explicit state3 packet is validated.
+                self._pitch.update(draining=True, stopped_at_monotonic=time.monotonic())
+        self._settle_stream_future(request, dict(status, confirmed_by='ack'))
+
+    def _decode_stream(self, body, run, stage):
+        decoder: Any = self._pitch_decoder
+        if decoder is None:
+            self._capture_fault('decoder-unavailable', 'sentinel_pitch_stream.decode_pitch_stream_packet missing')
+            return None
+        try:
+            status, records = decoder(bytes(body), expected_run=run)
+        except Exception as error:  # 解码器把截断/身份/拒绝都表达为异常.
+            self._capture_fault(f'{stage}-rejected', f'{type(error).__name__}: {error}')
+            return None
+        if not isinstance(status, dict) or status.get('error'):
+            self._capture_fault(f'{stage}-rejected', str(status))
+            return None
+        return status, list(records or ())
+
+    def _pitch_data(self, body):
+        with self._lock:
+            run, active = self._pitch['run'], self._pitch['active']
+            faulted, sink = self._pitch['fault'] is not None, self._pitch_sink
+        if faulted or not active or run is None:
+            self._stats['unmatched'] += 1
+            return
+        decoded = self._decode_stream(body, run, 'data')
+        if decoded is None:
+            return
+        status, records = decoded
+        if status.get('op') != PITCH_STREAM_DATA_OP or status.get('run') != run:
+            self._capture_fault('foreign-run',
+                f'op={status.get("op")} run={status.get("run")} expected run={run}')
+            return
+        with self._lock:
+            expected = self._pitch['last_sequence'] + 1
+            generated_before = self._pitch['last_generated']
+        generated = status.get('generated')
+        if status.get('dropped', 0) or (generated is not None and generated < generated_before):
+            self._capture_fault('stream-loss', 'recorder dropped samples or generation counter regressed')
+            return
+        for record in records:
+            sequence = struct.unpack_from('<I', record, 4)[0]
+            if sequence != expected:
+                self._capture_fault('sequence-gap', f'expected record {expected}, got {sequence}')
+                return
+            expected += 1
+        if status.get('state') == 3 and generated is not None and expected != generated:
+            self._capture_fault('incomplete-final', f'collected {expected}, recorder generated {generated}')
+            return
+        if sink is not None:
+            try:
+                sink(status, records)
+            except Exception as error:  # 汇队列满/已故障: 立即可见, 不阻塞 UART 线程.
+                self._capture_fault('sink', f'{type(error).__name__}: {error}')
+                return
+        with self._lock:
+            self._pitch['packets'] += 1
+            self._pitch['records'] += len(records)
+            self._pitch['last_status'] = dict(status)
+            self._pitch['last_sequence'] = expected - 1
+            if generated is not None:
+                self._pitch['last_generated'] = generated
+            if status.get('state') == 3:
+                self._pitch.update(finished=True, active=False)
+            self._pitch['last_packet_monotonic'] = time.monotonic()
+            first = self._pitch['confirmed_by'] is None
+            if first:
+                self._pitch['confirmed_by'] = 'data'
+            starters = [pending for pending in self._pitch_pending.values()
+                        if pending.request.op == PITCH_STREAM_OPS['start'] and pending.request.run == run]
+        if first:
+            for pending in starters:
+                self._settle_stream_future(pending.request,
+                    dict(status, confirmed_by='data', run=run, session=self._session))
 
     def read_all_params(self):
         result, entries = Future(), []
@@ -257,7 +574,8 @@ class AsyncSentinelClient:
                    wire.ALIGN: wire.encode_align, wire.PARAM_READ: wire.encode_param_read,
                    wire.PARAM_WRITE: wire.encode_param_write, wire.STATUS: wire.encode_status,
                    wire.DIAGNOSTICS: wire.encode_diagnostics, wire.TARGETS: wire.encode_targets,
-                   wire.PERMIT: wire.encode_permit}[op]
+                   wire.PERMIT: wire.encode_permit,
+                   wire.PITCH_IDENTIFICATION: wire.encode_pitch_identification}[op]
         return encoder(**values) if op == wire.HELLO else encoder(request.session, sequence, **values)
 
     def _begin(self, request, now):
@@ -293,6 +611,9 @@ class AsyncSentinelClient:
             del self._pending[oldest]
             self._stats['stream_timeouts'] += 1
         self._pending[self._frame] = pending
+        if request.operation == wire.TARGETS:
+            with self._lock:
+                self._state['last_target_sent_sequence'] = sequence
         self.transport.send(message)
         self._stats['sent'] += 1
 
@@ -316,9 +637,22 @@ class AsyncSentinelClient:
             self._source_generation += 1
             self._connected = False
             self._state['connected'] = False
+            # 采集身份属于旧会话: 连同未发出的请求一起作废, 旧 run 的迟到应答不得续采.
+            pitch_requests = list(self._pitch_requests)
+            self._pitch_requests.clear()
+            pitch_pendings = list(self._pitch_pending.values())
+            self._pitch_pending.clear()
+            self._pitch.update(run=None, op=0, duration_us=0, active=False, session=0,
+                               confirmed_by=None, packets=0, records=0, last_status={},
+                               last_packet_monotonic=None, started_at_monotonic=None,
+                               stopped_at_monotonic=None, last_ack=None)
         for request in reads:
             if not request.future.cancelled():
                 request.future.set_exception(wire.ProtocolError('session replaced'))
+        for pending in pitch_pendings:
+            self._settle_stream_future(pending.request, error=wire.ProtocolError('session replaced'))
+        for request in pitch_requests:
+            self._settle_stream_future(request, error=wire.ProtocolError('session replaced'))
         self._sequence = 0
         self._page_sequences.clear()
 
@@ -360,11 +694,18 @@ class AsyncSentinelClient:
                 self._state['error'] = str(error)
             return
         self._stats['replies'] += 1
+        decoded['received_at_monotonic'] = time.monotonic()
         with self._lock:
+            # Keep every validated rejection, even when a newer successful ACK
+            # replaces last_target_ack before the consumer next takes a snapshot.
+            if request.operation == wire.TARGETS and decoded.get('result') != 0:
+                self._state['target_rejections'] += 1
+                self._state['last_target_rejection'] = dict(decoded)
             if request.operation == wire.HELLO:
                 self._session = decoded['session']
                 self._connected = True
-                self._state.update(decoded, connected=True, status={}, diagnostics={}, error='')
+                self._state.update(decoded, connected=True, status={}, diagnostics={}, error='',
+                                   last_target_ack=None, last_target_sent_sequence=0)
             else:
                 # 缓存重传的代次是原请求完成时的代次, 不能覆盖随后已经观测到的新代次.
                 for key in ('config_epoch', 'reference_epoch'):
@@ -375,7 +716,6 @@ class AsyncSentinelClient:
                 self._page_sequences[key] = pending.sequence
                 if request.operation == wire.STATUS and 'page' in decoded:
                     # 只记录主机收包时刻, 供界面判旧; 不更改 MCU 样本时间或线协议.
-                    decoded['received_at_monotonic'] = time.monotonic()
                     self._state['status'][decoded['page']] = deepcopy(decoded)
                 elif request.operation == wire.DIAGNOSTICS and 'page' in decoded:
                     self._state['diagnostics'][decoded['page']] = deepcopy(decoded)
@@ -451,12 +791,24 @@ class AsyncSentinelClient:
                     reply = self.transport.receive(0)
                     if reply is None:
                         break
-                    self._receive(reply)
+                    # 原始连续流有自己的身份(帧回显/op/run), 不参与 v3 业务应答校验.
+                    if reply[0] == PITCH_STREAM_DATA:
+                        self._pitch_data(reply[2])
+                    elif reply[0] == PITCH_STREAM_ACK:
+                        self._pitch_ack(reply[1], reply[2])
+                    else:
+                        self._receive(reply)
                 self._expire(now)
+                self._expire_stream(now)
                 with self._lock:
                     change, self._change = self._change, None
                 if change:
                     self._begin(change, now)
+                with self._lock:
+                    stream_request = (self._pitch_requests.popleft()
+                                      if self._pitch_requests and self._connected else None)
+                if stream_request:
+                    self._begin_stream(stream_request, now)
                 if self._connected:
                     if now >= next_target:
                         self._targets(now)
@@ -466,8 +818,8 @@ class AsyncSentinelClient:
                     if permit and permit[0] == self._session:
                         _, produced, allow, ttl = permit
                         remaining = ttl-max(0, math.ceil((time.monotonic()-produced)*1000))
-                        self._begin(_Request(wire.PERMIT, dict(permit=allow and remaining > 0,
-                            ttl_ms=max(1, remaining)), None, self._session), now)
+                        self._begin(_Request(wire.PERMIT, {'permit': allow and remaining > 0,
+                            'ttl_ms': max(1, remaining)}, None, self._session), now)
                 with self._lock:
                     read = None
                     if self._reads and not self._read_active:
@@ -480,7 +832,7 @@ class AsyncSentinelClient:
                     explicit_fast = any(p.request.future is not None and p.request.operation == wire.STATUS
                         and p.request.values.get('page') == 0 for p in self._pending.values())
                     if not explicit_fast:
-                        self._begin(_Request(wire.STATUS, dict(page=0), None, self._session), now)
+                        self._begin(_Request(wire.STATUS, {'page': 0}, None, self._session), now)
                     next_fast = now+self.fast_period
                 self._wake.wait(0.001)
                 self._wake.clear()
@@ -497,15 +849,26 @@ class AsyncSentinelClient:
                 self._finish(pending, error=failure)
             with self._lock:
                 requests = list(self._reads) + ([self._change] if self._change else [])
-                self._reads.clear(); self._change = None
+                self._reads.clear()
+                self._change = None
+                stream_requests = list(self._pitch_requests)
+                self._pitch_requests.clear()
+                stream_pendings = list(self._pitch_pending.values())
+                self._pitch_pending.clear()
+                self._pitch.update(active=False, run=None, confirmed_by=None)
                 self._connected = False
                 self._state['connected'] = False
             for request in requests:
                 if not request.future.cancelled():
                     request.future.set_exception(wire.ProtocolError(str(error or 'link closed before send')))
+            for pending in stream_pendings:
+                self._settle_stream_future(pending.request, error=wire.ProtocolError(str(error or 'link closed')))
+            for request in stream_requests:
+                self._settle_stream_future(request, error=wire.ProtocolError(str(error or 'link closed before send')))
 
     def close(self):
-        self._stop.set(); self._wake.set()
+        self._stop.set()
+        self._wake.set()
         self._thread.join(timeout=2)
         self.transport.close()
         self._thread.join(timeout=2)

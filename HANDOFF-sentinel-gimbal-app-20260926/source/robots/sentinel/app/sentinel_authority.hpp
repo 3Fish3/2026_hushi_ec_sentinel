@@ -11,14 +11,17 @@
 #include <optional>
 
 namespace ec::sentinel::app {
-// 只在专用底盘调试镜像启用新组合; 未支持的组合待机, 不隐式启用Jetson或其它机构.
-enum class RemoteLayout : std::uint8_t { legacy_ch4 = 0, chassis_commissioning, mechanism_commissioning };
+// 专用调试镜像使用明确拨杆组合; 未支持的组合待机, 不隐式启用 Jetson 或其它机构.
+enum class RemoteLayout : std::uint8_t { legacy_ch4 = 0, chassis_commissioning, mechanism_commissioning,
+    gimbal_validation };
 [[nodiscard]] constexpr drivers::Dr16Switch remote_source_selection(RemoteLayout layout,
     drivers::Dr16Switch left, drivers::Dr16Switch right) noexcept {
     if (layout == RemoteLayout::legacy_ch4) { return left; }
     if (left == drivers::Dr16Switch::unknown || right == drivers::Dr16Switch::unknown) {
         return drivers::Dr16Switch::unknown;
     }
+    if (layout == RemoteLayout::gimbal_validation && left == drivers::Dr16Switch::up &&
+        right != drivers::Dr16Switch::down) { return drivers::Dr16Switch::up; }
     return layout == RemoteLayout::chassis_commissioning &&
         left == drivers::Dr16Switch::up && right == drivers::Dr16Switch::mid
         ? drivers::Dr16Switch::up : drivers::Dr16Switch::mid;

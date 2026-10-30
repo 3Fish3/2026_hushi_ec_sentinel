@@ -8,6 +8,7 @@ namespace {
 ec::sentinel::recording::Recorder recorder;
 ec::stm32f407::IrqCriticalSection lock;
 }
+ec::sentinel::recording::Recorder& ec_raw_recorder() noexcept { return recorder; }
 void ec_raw_imu(const ec::drivers::Bmi088Reading& reading) noexcept {
     // 唯一快任务写入; 慢任务 request 使用临界区, 不可在 ISR 调用本接口.
     recorder.imu(reading, {ec_board_micros()});
@@ -40,6 +41,13 @@ std::size_t ec_raw_request(std::span<const std::uint8_t> in, std::span<std::uint
 #if EC_SENTINEL_CAPTURE
 // 采集快任务同时拥有生产与串口服务, 不跨任务访问连续队列.
 std::size_t ec_stream_request(std::span<const std::uint8_t> in, std::span<std::uint8_t> out) noexcept {
+    if (in.size() == 12 && in[1] == 1 && in[2] == 3) {
+        // CAPTURE has no execution trace; do not advertise fake control acquisition.
+        std::array<std::uint8_t, 12> invalid{};
+        std::copy(in.begin(), in.end(), invalid.begin());
+        invalid[2] = 0;
+        return recorder.stream_request(invalid, out, {ec_board_micros()});
+    }
     return recorder.stream_request(in,out,{ec_board_micros()});
 }
 std::size_t ec_stream_packet(std::span<std::uint8_t> out, std::size_t& count) noexcept {

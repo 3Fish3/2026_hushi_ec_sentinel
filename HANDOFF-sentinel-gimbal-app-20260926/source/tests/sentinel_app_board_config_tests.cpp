@@ -26,6 +26,23 @@ void check(bool condition, const char* text, int line) {
 using namespace ec::sentinel;
 using namespace ec::sentinel::app;
 
+void test_gimbal_velocity_routing() {
+    CHECK(board::gimbal_velocity_slot(1, 0x208, 8) == 0);
+    CHECK(board::gimbal_velocity_slot(2, 0x20a, 8) == 1);
+    CHECK(!board::gimbal_velocity_slot(1, 0x20a, 8));
+    CHECK(!board::gimbal_velocity_slot(2, 0x208, 8));
+    CHECK(!board::gimbal_velocity_slot(1, 0x208, 7));
+    CHECK(!board::gimbal_velocity_slot(2, 0x20a, 0));
+    CHECK(!board::gimbal_velocity_slot(3, 0x208, 8));
+    CHECK(!board::gimbal_velocity_slot(1, 0x201, 8));
+    const auto config = board::mechanism_commissioning_config(board::deployment_config(), true);
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& slot = config.dji[i + 4];
+        CHECK(slot.bus && slot.device_id);
+        CHECK(board::gimbal_velocity_slot(slot.bus, 0x204u + slot.device_id, 8) == i);
+    }
+}
+
 void test_deployment_config_is_not_invented() {
     const auto config = board::deployment_config();
     CHECK(config.kind == ConfigKind::real_deployment);
@@ -283,6 +300,7 @@ void test_role_budgets_are_consistent() {
 } // 命名空间
 
 int main() {
+    test_gimbal_velocity_routing();
     test_deployment_config_is_not_invented();
     test_deployment_audience_rejects_and_grants_nothing();
     test_synthetic_config_is_rejected_in_deployment();

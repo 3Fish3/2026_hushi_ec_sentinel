@@ -17,7 +17,22 @@ option(EC_APP_GM6020_BENCH "APP maintenance-only physical bench: one CAN1 GM6020
 option(EC_APP_FOUR_MOTOR_BENCH "APP maintenance-only four-motor CAN1 bench" OFF)
 option(EC_APP_CHASSIS_COMMISSIONING "APP vehicle chassis commissioning with DT7 and maintenance" OFF)
 option(EC_APP_GIMBAL_COMMISSIONING "APP vehicle gimbal mechanical commissioning" OFF)
+option(EC_APP_GIMBAL_REMOTE_VERIFY "Allow DT7 validation with the same live gimbal tuning gains" OFF)
+if(EC_APP_GIMBAL_REMOTE_VERIFY AND (NOT EC_BUILD_SENTINEL_APP OR NOT EC_APP_GIMBAL_COMMISSIONING))
+    message(FATAL_ERROR "Gimbal remote verification requires the gimbal APP role")
+endif()
 option(EC_APP_SHOOTER_COMMISSIONING "APP vehicle friction and feeder commissioning" OFF)
+option(EC_APP_PITCH_IDENTIFICATION "Enable explicitly bounded Pitch experiments (separate audited gimbal image)" OFF)
+set(EC_APP_PITCH_POLICY_HEADER "" CACHE FILEPATH "Trusted header defining ec::sentinel::board::trusted_pitch_identification_policy; no physical defaults")
+if(EC_APP_PITCH_IDENTIFICATION)
+    if(NOT EC_BUILD_SENTINEL_APP OR NOT EC_APP_GIMBAL_COMMISSIONING)
+        message(FATAL_ERROR "Pitch identification requires the gimbal APP deployment role")
+    endif()
+    if(NOT EXISTS "${EC_APP_PITCH_POLICY_HEADER}" OR IS_DIRECTORY "${EC_APP_PITCH_POLICY_HEADER}")
+        message(FATAL_ERROR "Pitch identification needs an explicit trusted physical-bound policy header")
+    endif()
+    get_filename_component(EC_APP_PITCH_POLICY_HEADER "${EC_APP_PITCH_POLICY_HEADER}" REALPATH)
+endif()
 set(_app_profiles)
 foreach(_profile EC_APP_GM6020_BENCH EC_APP_FOUR_MOTOR_BENCH EC_APP_CHASSIS_COMMISSIONING EC_APP_GIMBAL_COMMISSIONING EC_APP_SHOOTER_COMMISSIONING)
     if(${_profile})
@@ -192,7 +207,13 @@ if(EC_BUILD_SENTINEL_APP)
         set(_app_id "app-gm6020-id4-${EC_FIRMWARE_ID}")
         list(APPEND _app_audit_args --gm6020-bench)
     endif()
+    if(EC_APP_PITCH_IDENTIFICATION)
+        list(APPEND _app_audit_args --pitch-identification)
+        target_compile_definitions(sentinel_app PRIVATE EC_APP_PITCH_POLICY_HEADER="${EC_APP_PITCH_POLICY_HEADER}")
+    endif()
     target_compile_definitions(sentinel_app PRIVATE EC_FIRMWARE_ID="${_app_id}"
+        EC_APP_GIMBAL_REMOTE_VERIFY=$<BOOL:${EC_APP_GIMBAL_REMOTE_VERIFY}>
+        EC_APP_PITCH_IDENTIFICATION=$<BOOL:${EC_APP_PITCH_IDENTIFICATION}>
         EC_SENTINEL_APP=1 EC_SENTINEL_CAPTURE=0 EC_S5_GM6020_BENCH=0
         EC_APP_GM6020_BENCH=$<BOOL:${EC_APP_GM6020_BENCH}>
         EC_APP_FOUR_MOTOR_BENCH=$<BOOL:${EC_APP_FOUR_MOTOR_BENCH}>

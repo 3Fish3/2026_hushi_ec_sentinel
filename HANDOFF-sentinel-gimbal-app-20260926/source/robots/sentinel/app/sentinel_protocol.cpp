@@ -96,6 +96,9 @@ bool SentinelHostSession::expire_if_stale(Tick now) noexcept {
     // 必须按 role 清理: 只清 host 会留下维护会话的内部 bool, 与调用方输入 OR 后保活.
     link_expired_ = true;
     ++expired_sessions_;
+    if (role_source_ == Source::maintenance && executor_ && executor_->pitch_identification().active()) {
+        executor_->cancel_pitch_identification();
+    }
     app_->clear_role_session(role_source_);
     role_source_ = Source::none;
     request_ = false;
@@ -109,7 +112,8 @@ bool SentinelHostSession::non_idempotent_request(MessageType type) noexcept {
     case MessageType::targets:
     case MessageType::align:
     case MessageType::param_write:
-    case MessageType::permit: return true;
+    case MessageType::permit:
+    case MessageType::pitch_identification: return true;
     default: return false;
     }
 }
@@ -170,6 +174,9 @@ std::size_t SentinelHostSession::handle_hello(std::span<std::uint8_t> response, 
     if (!r.exact()) { return ack(MessageType::ack, 0, 0, ResultCode::bad_length, 0, response); }
     // 新握手: 替换旧会话. 旧会话的执行授权与请求立即失效 (它替换的是同一个来源身份),
     // 但不触碰其它来源 (遥控目标不受影响). 目标清理由应用在来源变化时统一完成.
+    if (executor_ && executor_->pitch_identification().active()) {
+        executor_->cancel_pitch_identification();
+    }
     app_->revoke_sessions();
     request_ = false;
     role_source_ = Source::none;
@@ -227,6 +234,9 @@ std::size_t SentinelHostSession::handle_authorize(std::span<std::uint8_t> respon
         if (requested == Source::host || requested == Source::maintenance) {
             // 换角色时先撤销旧角色的会话状态, 否则两个来源的内部 bool 会同时为真.
             if (role_source_ != Source::none && role_source_ != requested) {
+                if (role_source_ == Source::maintenance && executor_ && executor_->pitch_identification().active()) {
+                    executor_->cancel_pitch_identification();
+                }
                 app_->clear_role_session(role_source_);
             }
             if (requested == Source::host) {
@@ -241,6 +251,9 @@ std::size_t SentinelHostSession::handle_authorize(std::span<std::uint8_t> respon
         request_ = true;
     } else {
         // 撤销只清请求, 不改变拨杆选择的来源.
+        if (role_source_ == Source::maintenance && executor_ && executor_->pitch_identification().active()) {
+            executor_->cancel_pitch_identification();
+        }
         app_->revoke_sessions();
         role_source_ = Source::none;
         request_ = false;
@@ -536,6 +549,136 @@ std::size_t SentinelHostSession::handle_permit(std::span<std::uint8_t> response,
     return ack(MessageType::ack, session, seq, ResultCode::accepted, 0, response);
 }
 
+std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint8_t> response,
+    std::span<const std::uint8_t> payload, Tick now) noexcept {
+    std::uint32_t session = 0, seq = 0;
+    if (payload.size() >= 10) {
+        PayloadReader r{payload};
+        static_cast<void>(r.u8()); static_cast<void>(r.u8());
+        session = r.u32(); seq = r.u32();
+    }
+    if (payload.size() < 19) {
+        return ack(MessageType::ack, session, seq, ResultCode::bad_length, 0, response);
+    }
+    PayloadReader r{payload};
+    static_cast<void>(r.u8()); static_cast<void>(r.u8());
+    static_cast<void>(r.u32()); static_cast<void>(r.u32());
+    const auto op = r.u8();
+    const auto config_epoch = r.u32();
+    const auto reference_epoch = r.u32();
+
+    if (op > 3) {
+        return ack(MessageType::ack, session, seq, ResultCode::invalid_value, 0, response);
+    }
+    const bool is_start = (op == 1);
+    const std::size_t expected_len = is_start ? 43 : 19;
+    if (payload.size() != expected_len) {
+        return ack(MessageType::ack, session, seq, ResultCode::bad_length, 0, response);
+    }
+
+    PitchIdentificationRecipe recipe{};
+    if (is_start) {
+        recipe.run_id = r.u32();
+        recipe.amplitude_nm = r.f32();
+        recipe.half_period_us = r.u32();
+        recipe.baseline_us = r.u32();
+        recipe.cycles = r.u32();
+        recipe.final_hold_us = r.u32();
+    }
+    if (!r.exact()) {
+        return ack(MessageType::ack, session, seq, ResultCode::bad_length, 0, response);
+    }
+
+    const bool non_idempotent = (op != 0);
+    const auto check = check_session(session, seq, non_idempotent, now);
+    if (!check.proceed) {
+        return ack(MessageType::ack, session, seq, check.code, 0, response);
+    }
+
+    auto make_response = [&](ResultCode result, std::uint8_t reason = 0) noexcept -> std::size_t {
+        PayloadWriter w{response};
+        w.u8(protocol_version);
+        w.u8(static_cast<std::uint8_t>(MessageType::pitch_identification_status));
+        w.u32(session);
+        w.u32(seq);
+        w.u8(static_cast<std::uint8_t>(result));
+        w.u8(reason);
+        const bool avail = executor_ && executor_->pitch_identification_available();
+        w.u8(avail ? 1 : 0);
+        if (executor_) {
+            const auto& ident = executor_->pitch_identification();
+            w.u8(static_cast<std::uint8_t>(ident.state()));
+            w.u8(static_cast<std::uint8_t>(ident.fault()));
+            w.u32(ident.run_id());
+            w.f32(ident.requested_nm());
+            w.f32(ident.encoded_nm());
+        } else {
+            w.u8(0);
+            w.u8(0);
+            w.u32(0);
+            w.f32(0.0f);
+            w.f32(0.0f);
+        }
+        return w.overflow ? 0 : w.size();
+    };
+
+    if (op == 0) { // query
+        accept_activity(now);
+        return make_response(ResultCode::accepted);
+    }
+
+    if (op == 2) { // cancel
+        if (role_source_ != Source::maintenance) {
+            return make_response(ResultCode::not_permitted);
+        }
+        if (executor_) {
+            executor_->cancel_pitch_identification();
+        }
+        ++accepted_commands_;
+        accept_activity(now);
+        return make_response(ResultCode::accepted);
+    }
+
+    // start (1) or reset (3): require actual maintenance ownership/requester_holds, matching epochs
+    if (role_source_ != Source::maintenance || !requester_holds()) {
+        return make_response(ResultCode::not_permitted);
+    }
+    if (config_epoch != app_->config_epoch() || reference_epoch != app_->reference_epoch()) {
+        return make_response(ResultCode::epoch_mismatch);
+    }
+
+    if (op == 1) { // start
+        if (!std::isfinite(recipe.amplitude_nm)) {
+            return make_response(ResultCode::invalid_value);
+        }
+        if (executor_ == nullptr || !executor_->pitch_identification_available()) {
+            return make_response(ResultCode::rejected);
+        }
+        const bool started = executor_->start_pitch_identification(recipe, now, *app_);
+        if (!started) {
+            return make_response(ResultCode::rejected);
+        }
+        ++accepted_commands_;
+        accept_activity(now);
+        return make_response(ResultCode::accepted);
+    }
+
+    if (op == 3) { // reset
+        if (executor_ == nullptr) {
+            return make_response(ResultCode::rejected);
+        }
+        const bool reset_ok = executor_->reset_pitch_identification(now, *app_);
+        if (!reset_ok) {
+            return make_response(ResultCode::rejected);
+        }
+        ++accepted_commands_;
+        accept_activity(now);
+        return make_response(ResultCode::accepted);
+    }
+
+    return make_response(ResultCode::invalid_value);
+}
+
 std::size_t SentinelHostSession::handle_status(std::span<std::uint8_t> response,
     std::span<const std::uint8_t> payload, Tick now) noexcept {
     PayloadReader r{payload};
@@ -742,8 +885,9 @@ std::size_t SentinelHostSession::handle(std::span<const std::uint8_t> request, T
             }
         }
         if (has_session_ && request_session == session_id_ && has_seq_ && request_seq <= last_seq_) {
-            const auto& cached = mutation_request(type) ? mutation_result_ : last_result_;
-            const bool eligible = mutation_request(type) || request_seq == last_seq_;
+            const bool is_mutation = mutation_request(type, request);
+            const auto& cached = is_mutation ? mutation_result_ : last_result_;
+            const bool eligible = is_mutation || request_seq == last_seq_;
             if (eligible && cached.seq == request_seq && cached.matches(request)) {
                 if (cached.response_size > response.size()) { return 0; }
                 ++duplicate_requests_;
@@ -763,6 +907,7 @@ std::size_t SentinelHostSession::handle(std::span<const std::uint8_t> request, T
     case MessageType::param_read: size = handle_param_read(response, request, now); break;
     case MessageType::param_write: size = handle_param_write(response, request, now); break;
     case MessageType::permit: size = handle_permit(response, request, now); break;
+    case MessageType::pitch_identification: size = handle_pitch_identification(response, request, now); break;
     case MessageType::status: size = handle_status(response, request, now); break;
     case MessageType::diagnostics: size = handle_diagnostics(response, request, now); break;
     default:
@@ -772,7 +917,7 @@ std::size_t SentinelHostSession::handle(std::span<const std::uint8_t> request, T
     // 未处理/未通过校验的错误路径 (bad_length/no_session/重放) 不得改变另一请求的缓存.
     if (cacheable && request_validated_ && size != 0) {
         last_result_.store(request_seq, request, {response.data(), size});
-        if (mutation_request(type)) { mutation_result_ = last_result_; }
+        if (mutation_request(type, request)) { mutation_result_ = last_result_; }
     }
     return size;
 }

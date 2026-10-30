@@ -7,10 +7,11 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
+import math
 import re
 import struct
 import subprocess
+from pathlib import Path
 
 # 部署摘要布局 (board_app_config.hpp 的 DeploymentSummary): 11 个统计 uint32 +
 # 9 个 DJI 槽地址 + 1 个 DM 地址, 共 21 个 uint32.
@@ -74,8 +75,45 @@ def read_summary(image, address):
     offset = address - 0x08000000
     require(0 <= offset <= len(image) - 4 * len(SUMMARY_FIELDS),
             'Deployment summary symbol is outside the flashed image')
-    values = struct.unpack_from('<%dI' % len(SUMMARY_FIELDS), image, offset)
-    return dict(zip(SUMMARY_FIELDS, values))
+    values = struct.unpack_from(f'<{len(SUMMARY_FIELDS)}I', image, offset)
+    return dict(zip(SUMMARY_FIELDS, values, strict=True))
+
+
+def read_pitch_summary(image, address, enabled):
+    """Read the separately versioned opt-in descriptor, never infer policy from symbols."""
+    fields = ('magic', 'layout', 'enabled', 'require_capture', 'min_rad', 'max_rad',
+              'max_amplitude_nm', 'max_expected_torque_nm', 'max_velocity_rad_s',
+              'max_tracking_error_rad', 'min_half_period_us', 'max_duration_us',
+              'max_feedback_age_us', 'max_step_us', 'zero_offset_rad', 'soft_min_rad',
+              'soft_max_rad', 'dm_address', 'target_ttl_ms', 'link_ttl_ms', 'record_bytes')
+    offset = address - 0x08000000
+    require(0 <= offset <= len(image) - 4 * len(fields), 'Pitch summary outside image')
+    encoded: dict[str, int] = dict(zip(fields, struct.unpack_from('<21I', image, offset), strict=True))
+    summary = dict[str, int | float](encoded)
+    require(summary['magic'] == 0x50494431 and summary['layout'] == 1, 'Pitch summary identity mismatch')
+    require(summary['enabled'] == int(enabled), 'Pitch identification opt-in and audit selection differ')
+    require(summary['record_bytes'] == 64, 'Pitch recording must retain complete 64-byte records')
+    for name in fields[4:10] + fields[14:17]:
+        summary[name] = struct.unpack('<f', struct.pack('<I', encoded[name]))[0]
+        require(math.isfinite(summary[name]), f'Pitch {name} must be finite')
+    require(summary['target_ttl_ms'] == 100 and summary['link_ttl_ms'] == 200,
+            'Pitch identification must not relax target/link TTLs')
+    if not enabled:
+        require(summary['require_capture'] == 0 and all(summary[key] == 0 for key in fields[4:14]),
+                'Ordinary APP must have no latent identification policy')
+        return summary
+    require(summary['require_capture'] == 1, 'Pitch identification must require synchronized recording')
+    require(summary['dm_address'] == 0x00110102, 'Pitch identification needs CAN2 node1/master0x011')
+    require(summary['soft_min_rad'] <= summary['min_rad'] < summary['max_rad'] <= summary['soft_max_rad'],
+            'Pitch policy outside joint limits')
+    require(0 < summary['max_amplitude_nm'] <= summary['max_expected_torque_nm'] <= 10,
+            'Pitch torque policy outside confirmed MIT encoding range')
+    require(summary['max_velocity_rad_s'] > 0 and summary['max_tracking_error_rad'] > 0,
+            'Pitch velocity/tracking guards must be positive')
+    require(0 < summary['min_half_period_us'] <= summary['max_duration_us'] < 0x80000000 and
+            0 < summary['max_feedback_age_us'] < 0x80000000 and 0 < summary['max_step_us'] <= 5000,
+            'Pitch timing guards invalid')
+    return summary
 
 
 def main():
@@ -87,7 +125,11 @@ def main():
     parser.add_argument('--chassis-commissioning', action='store_true', help='核对实车底盘调试APP, 仅四轮可执行')
     parser.add_argument('--gimbal-commissioning', action='store_true', help='核对三关节独立机械调试镜像')
     parser.add_argument('--shooter-commissioning', action='store_true', help='核对双摩擦轮与单拨弹调试镜像')
+    parser.add_argument('--pitch-identification', action='store_true',
+                        help='Require explicitly enabled bounded Pitch experiment descriptor (gimbal only)')
     args = parser.parse_args()
+    require(not args.pitch_identification or args.gimbal_commissioning,
+            'Pitch identification audit requires --gimbal-commissioning')
     commissioning = args.chassis_commissioning or args.gimbal_commissioning or args.shooter_commissioning
     require(sum((args.gm6020_bench, args.four_motor_bench, args.chassis_commissioning,
                  args.gimbal_commissioning, args.shooter_commissioning)) <= 1,
@@ -121,15 +163,21 @@ def main():
                     for _, _, text in entries),
             'Unused nosys I/O or heap stubs remain in the firmware')
     build_id = find_symbol(entries, 'g_ec_s1_build_id')
-    require(build_id is not None, 'Missing firmware identity symbol')
+    if build_id is None:
+        raise SystemExit('Missing firmware identity symbol')
     offset = build_id[0] - 0x08000000
     label = image[offset:offset + 64].split(b'\0', 1)[0].decode('ascii', 'replace')
     require(FIRMWARE_ID_PATTERN.match(label),
             f'Production APP firmware label must start with "app-": {label!r}')
     # 部署摘要: 核对镜像里没有臆测配置, 且声明的容量覆盖应用槽位.
     summary_symbol = find_symbol(entries, 'ec_app_deployment_summary')
-    require(summary_symbol is not None, 'Missing deployment summary symbol')
+    if summary_symbol is None:
+        raise SystemExit('Missing deployment summary symbol')
     summary = read_summary(image, summary_symbol[0])
+    pitch_symbol = find_symbol(entries, 'ec_pitch_identification_summary')
+    if pitch_symbol is None:
+        raise SystemExit('Missing explicit Pitch identification opt-in descriptor')
+    pitch_summary = read_pitch_summary(image, pitch_symbol[0], args.pitch_identification)
     require(summary['magic'] == SUMMARY_MAGIC, 'Deployment summary magic mismatch')
     require(summary['layout'] == SUMMARY_LAYOUT, 'Deployment summary layout mismatch')
     require(summary['kind'] == CONFIG_KIND_REAL_DEPLOYMENT,
@@ -195,9 +243,10 @@ def main():
                 f'Missing static control task storage: {name}')
     require(len(image) <= 1024 * 1024, 'Image exceeds flash capacity')
     print(json.dumps({'result': 'pass', 'elf': str(args.elf), 'image_bytes': len(image),
+                      'pitch_identification': pitch_summary,
                       'elf_sha256': hashlib.sha256(elf).hexdigest(),
                       'bin_sha256': hashlib.sha256(image).hexdigest(),
-                      'image_role': ('ACTUATING gimbal mechanical commissioning, marked zero, unknown mechanical limits' if args.gimbal_commissioning else
+                      'image_role': ('ACTUATING gimbal commissioning; source-declared zero/limits, hardware validation required' if args.gimbal_commissioning else
                                      'ACTUATING shooter commissioning, friction pair and single feeder' if args.shooter_commissioning else
                                      'ACTUATING vehicle chassis commissioning, remote startup, four C620 wheels' if args.chassis_commissioning else
                                      'ACTUATING four-motor CAN1 APP bench, maintenance-only' if args.four_motor_bench else

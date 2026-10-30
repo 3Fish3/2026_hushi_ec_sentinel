@@ -3,6 +3,8 @@
 #include "ec/transport/can.hpp"
 #if EC_SENTINEL_APP || EC_SENTINEL_CAPTURE
 #include "raw_record.hpp"
+// APP initialization/control-thread only; all concurrent short-window access stays locked.
+ec::sentinel::recording::Recorder& ec_raw_recorder() noexcept;
 void ec_raw_imu(const ec::drivers::Bmi088Reading& reading) noexcept;
 void ec_raw_can(std::uint8_t bus, const ec::transport::CanFrame& frame, ec::MicroTick at, std::uint32_t lost) noexcept;
 void ec_raw_push(const ec::sentinel::recording::Record& record) noexcept;
