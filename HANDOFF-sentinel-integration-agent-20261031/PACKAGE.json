@@ -1,0 +1,35 @@
+{
+  "agent_policy_files_bundled": false,
+  "created_utc": "20261030T202445Z",
+  "dependencies_bundled": false,
+  "firmware": {
+    "capture_current": {
+      "bytes": 78480,
+      "elf": "source/build/capture-current-arm-Release/boards/sentinel_f407/sentinel_capture.elf",
+      "label": "capture-current-20261031-032021",
+      "sectors": [
+        0,
+        4
+      ],
+      "sha256": "a750840115064988ec676027fdc92cde4c6c0ac464d4e258ad07ac44535de809"
+    },
+    "integration": {
+      "bytes": 206016,
+      "elf": "source/build/app-integration-arm-Release/boards/sentinel_f407/sentinel_app.elf",
+      "label": "app-integration-20261031-032014",
+      "sectors": [
+        0,
+        5
+      ],
+      "sha256": "ed2a878a243c8a41ba0c5045dc7482851f5babaa68511fda34be18761acb54db"
+    }
+  },
+  "hardware_access_during_packaging": false,
+  "package_id": "sentinel-integration-20261030T202445Z-6a11161fd948",
+  "schema": "sentinel-integration-handoff/1",
+  "source_base_commit": "0c8efbb0129fbc78bf2a33ec8fd494cc31f113f5",
+  "source_baseline": "SOURCE_BASELINE.json",
+  "source_snapshot": "working tree, including uncommitted/new source files",
+  "source_tree_sha256": "6a11161fd9489bda12dae0e837e9f74fcdf96754cfc4ae10366390d2e152d618",
+  "task_document": "source/docs/guides/Agent-底盘云台联调.md"
+}

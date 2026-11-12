@@ -1,0 +1,17 @@
+/build/
+/out/
+/.cache/
+/.venv/
+__pycache__/
+.obsidian/
+# 本地参考资料统一忽略: 厂商手册、外部参考仓库与旧工程都不入库,
+# 克隆不会自动取得; 文档只保留文件名、版本与校验和记录.
+/references/
+/docs/boards/sentinel_f407/references/
+# 本地执行交接计划不纳入版本控制.
+/Plan.local.md
+# CubeMX 本机路径元数据与独立构建入口不参与根工程构建.
+/boards/sentinel_f407/cubemx/sentinel_s1/.mxproject
+/boards/sentinel_f407/cubemx/sentinel_s1/CMakeLists.txt
+/boards/sentinel_f407/cubemx/sentinel_s1/CMakePresets.json
+/boards/sentinel_f407/cubemx/sentinel_s1/cmake/

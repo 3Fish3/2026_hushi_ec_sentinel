@@ -1,0 +1,1243 @@
+{
+  "files": {
+    ".gitignore": {
+      "bytes": 637,
+      "sha256": "a677bf1614f6dfb2213d1c5629bc7c0019829c089a2770bb5911e0bc181de664"
+    },
+    "CMakeLists.txt": {
+      "bytes": 27886,
+      "sha256": "02708c475ea4c2186c3e2dac844abb29a92a765774f99636624da74dc3300a1f"
+    },
+    "README.md": {
+      "bytes": 3361,
+      "sha256": "ed362281ef18de446882195bad5f473c21f396c6ccd3b974e751f38b8095dfa9"
+    },
+    "boards/sentinel_f407/CMakeLists.txt": {
+      "bytes": 15282,
+      "sha256": "c0db794e186561c3b97e619ae82311ec81243f6db2d1cb63f756ab620e671559"
+    },
+    "boards/sentinel_f407/check_capture.py": {
+      "bytes": 3663,
+      "sha256": "66a3b067fffe6498a4479dcdacd0ec8c4e0e39f5abcb1da8168b6b43c2058d8c"
+    },
+    "boards/sentinel_f407/check_firmware.py": {
+      "bytes": 8126,
+      "sha256": "2aaf7d6477e18968d5fd68923c7b652d96ca353b5cc3287be5c445295e277012"
+    },
+    "boards/sentinel_f407/check_link_verify.py": {
+      "bytes": 2740,
+      "sha256": "a876439b0adf3af6bc724459302b91cd6730a13da713f33820687cb84632b681"
+    },
+    "boards/sentinel_f407/check_sentinel_app.py": {
+      "bytes": 11182,
+      "sha256": "6fa3e2e70f10787963a5ddbc9cc617f268e321ab20db07ae1ca792607767dbe4"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/.mxproject": {
+      "bytes": 18834,
+      "sha256": "82efebceba5343fd0c05284eb60b4c9498c3d4f1408b38715adf1165ba2aec12"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/CMakeLists.txt": {
+      "bytes": 1590,
+      "sha256": "66c15f6ea76d77c436c3049763974ed6a069ac4e077305ee2b59d764e4c79746"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/CMakePresets.json": {
+      "bytes": 906,
+      "sha256": "5cfd04cb98883899a9e70bb39dc70f74ee610b88ae34625dafac65f18f322a94"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/FreeRTOSConfig.h": {
+      "bytes": 7619,
+      "sha256": "8435e378dc255bc57aead8d264b6ee1c365a952810860fad6666ccefb392c43f"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/can.h": {
+      "bytes": 1406,
+      "sha256": "98925d7f4010f054e17d240116244377377c15248a5413a09ff811cdc23084e5"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/dma.h": {
+      "bytes": 1393,
+      "sha256": "7cf6f7450a29d26303cbba5a3ca8c6cb24a02635d6a5ba4d05141fdfc75c4c49"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/gpio.h": {
+      "bytes": 1313,
+      "sha256": "e2d62f964a0b7f238384ed6a20a181d09df9647240a268dc547acf5b35099f74"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/main.h": {
+      "bytes": 2230,
+      "sha256": "394ac76c3bec206c816b8695596797b164d839d62cc6bf7b115028cb53298591"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/spi.h": {
+      "bytes": 1345,
+      "sha256": "7ee08a1f7b3c518b8f1a33e73ee2d18830c1336be9341e774e73f137984491d8"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/stm32f4xx_hal_conf.h": {
+      "bytes": 20026,
+      "sha256": "81cc625d276eac86286a348e7d26966e26523a13b21c583a2a0b04f2367565c0"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/stm32f4xx_it.h": {
+      "bytes": 2231,
+      "sha256": "c27dd66a1450c0576ab4d17bff755a0763b45eb9c266d02b5781f78b021e7fc4"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Inc/usart.h": {
+      "bytes": 1504,
+      "sha256": "3f903bf8cd4ef9e43a99f5d9a99498d6b36a7bdf6793c1a34dac014f3e1de09e"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/can.c": {
+      "bytes": 5881,
+      "sha256": "181e708cba8529e2b16a286df1482f243cc25621e711093b88e689f53787f099"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/dma.c": {
+      "bytes": 2205,
+      "sha256": "76ab1500cfd118f6dcb0adba4d14e149c0809a27d9fb2ae8c1750b4cc2b3325c"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/freertos.c": {
+      "bytes": 5291,
+      "sha256": "efeef841a8b8b93a67341640f2706b5190db147f6995f8c789fa863949d1d00a"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/gpio.c": {
+      "bytes": 2932,
+      "sha256": "2e369baa860e7127d13a3a9b7a264ce349a604f910da200e5163636cf319bb80"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/main.c": {
+      "bytes": 6431,
+      "sha256": "ee388d59fe4f6477f94872f2f3ddc5b20f7aefe6b7c614d109acb755bbdc450a"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/spi.c": {
+      "bytes": 3565,
+      "sha256": "6bc973c50b2c19542d89bc66b2dab4862df0e74051e21688eba6594695aaacb9"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/stm32f4xx_hal_msp.c": {
+      "bytes": 2319,
+      "sha256": "72185148391041d5c2cc7e25afdba43f678b36ffa48a5a8b6703daaed4e70cb2"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/stm32f4xx_hal_timebase_tim.c": {
+      "bytes": 4529,
+      "sha256": "fa1c37ade77abe36b428374516b418d5bbd669378d95220f6bdd07e168b09908"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/stm32f4xx_it.c": {
+      "bytes": 8982,
+      "sha256": "d168a1c9bb92b428d3734677615fb7970b64209f11f7517520529c63b9ac224f"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/system_stm32f4xx.c": {
+      "bytes": 26695,
+      "sha256": "a31929eab936ac98db060c18917118acf79dc96e1f03ed4b57d614535dd06d70"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/Core/Src/usart.c": {
+      "bytes": 11970,
+      "sha256": "2465fa5cbb7145c387e9c031caff7cdaf73bf20c01720a8c1922a29b39c63e09"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/STM32F407xx_FLASH.ld": {
+      "bytes": 8948,
+      "sha256": "b5734b8598af87a42a02da544cb7479241d36f6e9370605b59752c459a1b09cd"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/cmake/gcc-arm-none-eabi.cmake": {
+      "bytes": 2157,
+      "sha256": "55ea6a744c581cdf8643fb232913e72d29cccec95b8ba857cc651df32bf24109"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/cmake/starm-clang.cmake": {
+      "bytes": 3004,
+      "sha256": "85523661a46677b7e167eaf769f7935366aa3d0a158163cde26566304c131483"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/cmake/stm32cubemx/CMakeLists.txt": {
+      "bytes": 8575,
+      "sha256": "c7f10abe054fd8cdcda94e7b5f797c277c7244522bcd9b143f34397929e941a1"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/sentinel_s1.ioc": {
+      "bytes": 12309,
+      "sha256": "f0fcc5e4480e044c55f53860f2be0d2d199c05bf15d256d42b78a6af8051a31d"
+    },
+    "boards/sentinel_f407/cubemx/sentinel_s1/startup_stm32f407xx.s": {
+      "bytes": 22858,
+      "sha256": "430f14fd00db0f7aa88f354aee54064efb582ddc4cc264fb8e435dc7d7a2f53d"
+    },
+    "boards/sentinel_f407/include/board_app.hpp": {
+      "bytes": 3151,
+      "sha256": "97e32d1d0881a1cf1f23b960291ebe6e74a9f473a31ee27b92699c9ec4f35d8d"
+    },
+    "boards/sentinel_f407/include/board_app_bench_config.hpp": {
+      "bytes": 4174,
+      "sha256": "8373828d0a4fc7a870edbee21d7157bdbd38effe0d6c68ad994b3aab3c79b628"
+    },
+    "boards/sentinel_f407/include/board_app_chassis_config.hpp": {
+      "bytes": 3292,
+      "sha256": "b98c563961d4fd181928eb69641f05bc38940129d30119268f7f13509c65478c"
+    },
+    "boards/sentinel_f407/include/board_app_config.hpp": {
+      "bytes": 11920,
+      "sha256": "012aaf98bc23b05523c5ab752c172ccbaee7fcde9e9bc803b2af160318f31bf2"
+    },
+    "boards/sentinel_f407/include/board_app_integration_config.hpp": {
+      "bytes": 2426,
+      "sha256": "2e61f383fdb6c74a6a5eebbea530df435189ce598e1f83f04b2c6a58179659ea"
+    },
+    "boards/sentinel_f407/include/board_app_integration_site.hpp": {
+      "bytes": 1742,
+      "sha256": "92b5b6b541d15b38cf16d9f8327297e471f13c77477bcd0d73ba503aafb6bbbd"
+    },
+    "boards/sentinel_f407/include/board_app_mechanism_config.hpp": {
+      "bytes": 3081,
+      "sha256": "10f829710ed554e2d0c396068972c04075136d3a8c841a858b49d9f2cd110982"
+    },
+    "boards/sentinel_f407/include/board_app_observation.h": {
+      "bytes": 2778,
+      "sha256": "112b73ad6e70f07d3941c4fb4116377a74ef2721daa1f295b097430b268ef73c"
+    },
+    "boards/sentinel_f407/include/board_assembly.hpp": {
+      "bytes": 4430,
+      "sha256": "6282f77c48c7a11117dec58808a3a69d370ee1784550861557081d938e678957"
+    },
+    "boards/sentinel_f407/include/board_bench.hpp": {
+      "bytes": 579,
+      "sha256": "899fd9c896aee0dc45e11d4b3a0d49449cc0a4726fac8bdf898aeb00fc1fa675"
+    },
+    "boards/sentinel_f407/include/board_can_queue.hpp": {
+      "bytes": 1161,
+      "sha256": "7899c6a3fa65da58129381af97c5446851bab633e828fbe1779b4e95e05b815d"
+    },
+    "boards/sentinel_f407/include/board_capture.hpp": {
+      "bytes": 515,
+      "sha256": "9ca7a3213254c0e7e300b59e5f918ff8d8bb89e8047c63b6d03c922e70d3cafa"
+    },
+    "boards/sentinel_f407/include/board_current_harness.hpp": {
+      "bytes": 653,
+      "sha256": "6f257e1a5bd53082f734839da8191c65899ec60504246fd39f4442ab7b67dccf"
+    },
+    "boards/sentinel_f407/include/board_inputs.hpp": {
+      "bytes": 2163,
+      "sha256": "7492f6fea230854147cfc6f9ca11984fd64a423beac1d66419130bdd63268a1d"
+    },
+    "boards/sentinel_f407/include/board_io.h": {
+      "bytes": 2284,
+      "sha256": "aed706a9e211fbb291711f50349dbc0152804f4f9d17a88948d761dbf13d9aac"
+    },
+    "boards/sentinel_f407/include/board_monitor.h": {
+      "bytes": 398,
+      "sha256": "372ab2d11a4dc2ebb19f50ad972eb89aa68cf4bb0d9a0304a47e29151bd54584"
+    },
+    "boards/sentinel_f407/include/board_monitor_protocol.hpp": {
+      "bytes": 3109,
+      "sha256": "a164b4c3c1d5669ac4560faf3f9b334d58c28bb290911184847dbfbb4c7c6a2b"
+    },
+    "boards/sentinel_f407/include/board_observation.hpp": {
+      "bytes": 1364,
+      "sha256": "d02ea9decbf6cbccd4a51beda25f21f738eb3b0e61384304bf66d6881ffa6596"
+    },
+    "boards/sentinel_f407/include/board_raw.hpp": {
+      "bytes": 930,
+      "sha256": "fb7957e8eef6ba26a6ae25825a6702548cecdebcb6c4b4b4e20e62079bfc2463"
+    },
+    "boards/sentinel_f407/include/board_registry.h": {
+      "bytes": 1185,
+      "sha256": "104333d4b218d6126bda869f7c4cc5742903ef344d4f85d53648e0ecabe8c400"
+    },
+    "boards/sentinel_f407/include/board_role.hpp": {
+      "bytes": 4327,
+      "sha256": "89652ce9d43327d88ff991a3830b642db883fa661e0b2e6c48b1c11c0f984d85"
+    },
+    "boards/sentinel_f407/include/board_spi_transfer.hpp": {
+      "bytes": 1085,
+      "sha256": "e5652af8f45dd140d82c95bb86ebbd74de4579a2ac7417718f3e270af29eed8b"
+    },
+    "boards/sentinel_f407/include/gm6020_bench.hpp": {
+      "bytes": 17486,
+      "sha256": "02179e853fe005991e5a54ccfa332941a2051c449a6a33b8481dfa40aa7b3e5b"
+    },
+    "boards/sentinel_f407/include/gm6020_bench_excitation.hpp": {
+      "bytes": 1365,
+      "sha256": "f8ead122718521edc84b9c1b87e00c9dbc436a5703fab1e149c9f6ade3e2c87d"
+    },
+    "boards/sentinel_f407/include/gm6020_bench_protocol.hpp": {
+      "bytes": 4656,
+      "sha256": "deb18271a0ce315a9c8d8b18d09095e32289ea11b7456a70c13e5a065ae26332"
+    },
+    "boards/sentinel_f407/include/gm6020_bench_trace.hpp": {
+      "bytes": 11425,
+      "sha256": "5a9b02d0c2bb0a7d6eccbf0b67a70048c7068224731a13de26cc2b02a63fd2f4"
+    },
+    "boards/sentinel_f407/include/gm6020_bench_velocity.hpp": {
+      "bytes": 2619,
+      "sha256": "0efb18e3c8e2b0379d6a96f33f5ec30f26c6d32c5beb1ec614f7daaeef124286"
+    },
+    "boards/sentinel_f407/include/s1_diagnostics.h": {
+      "bytes": 2201,
+      "sha256": "610f4a3e8c400f10441bd4783e9a71661a56968c99a9897d0e62c9fc87a0fa43"
+    },
+    "boards/sentinel_f407/link_verify/main.cpp": {
+      "bytes": 7775,
+      "sha256": "5087bf4c70e5e7d4be6e6466c98c581734d4d1e55f3ee516b6d0e34b8dd8b0ef"
+    },
+    "boards/sentinel_f407/patch_ioc.py": {
+      "bytes": 8920,
+      "sha256": "234d410956057c8edd7e44fc97aec94f4c46156331cf4d9b662ef186d98ad408"
+    },
+    "boards/sentinel_f407/regenerate.ps1": {
+      "bytes": 2555,
+      "sha256": "c7c7140e5fc6ad3e3319e1d8f547c8a35abe579e48b2216a41108337df744251"
+    },
+    "boards/sentinel_f407/sdk.cmake": {
+      "bytes": 850,
+      "sha256": "71747a99e3a507c1dda5ee23b59a7b1f357a6d6d1b631825e0b5a0677df6eeae"
+    },
+    "boards/sentinel_f407/src/board_app.cpp": {
+      "bytes": 18188,
+      "sha256": "dc9689674e67cee346a8b279c8d45eead75454c25fe7f08bf5b2e722307e18ab"
+    },
+    "boards/sentinel_f407/src/board_assembly.cpp": {
+      "bytes": 5298,
+      "sha256": "a623b3417fd7cbe96c6ca0ac136379ad9d6a35d29f63244afe9265639153dbd2"
+    },
+    "boards/sentinel_f407/src/board_bench.cpp": {
+      "bytes": 4225,
+      "sha256": "012f149c628360c8173fe3908abf6b0693eff98741968eb620be095d55af6904"
+    },
+    "boards/sentinel_f407/src/board_capture.cpp": {
+      "bytes": 8487,
+      "sha256": "a9bdfefe09fcc7861cc7f68d4f209fc5067721a9a4c0e8ecd8e659d0fa193f61"
+    },
+    "boards/sentinel_f407/src/board_inputs.cpp": {
+      "bytes": 4180,
+      "sha256": "470f0580fd763e8ad4ffb800d29c11a7d781e1fd71dd78beecc16d0ca09324fb"
+    },
+    "boards/sentinel_f407/src/board_io.cpp": {
+      "bytes": 23283,
+      "sha256": "ccc2d4279b0080107b6ce8679313b7ff3f448d235650f4942675d648314c794c"
+    },
+    "boards/sentinel_f407/src/board_monitor.cpp": {
+      "bytes": 11999,
+      "sha256": "97fa0b58cedc55d3142a02c46ea94b3475b1432d4593f1966de3db8b5a4fc070"
+    },
+    "boards/sentinel_f407/src/board_raw.cpp": {
+      "bytes": 2595,
+      "sha256": "8718ee292da0b9fb88603a6d0cd918ba1478d3baac9ca06dc1f3cc02963a0684"
+    },
+    "boards/sentinel_f407/src/board_registry.cpp": {
+      "bytes": 14225,
+      "sha256": "60f6628355cddbf31448daa487ad16d709e3e19081f3da1ca785497ae8a09889"
+    },
+    "boards/sentinel_f407/src/s1_diagnostics.cpp": {
+      "bytes": 4579,
+      "sha256": "ae7792dbc7d4606c90aa4dfe1d1714898135d02d75f2abda459dfeb559c3debf"
+    },
+    "boards/sentinel_f407/tools/board_monitor.py": {
+      "bytes": 11511,
+      "sha256": "7bb532b96f071ce0fb5404c98495032992a863645002d0f680d93e8c035ebfa9"
+    },
+    "boards/sentinel_f407/tools/firmware_tool.cmd": {
+      "bytes": 268,
+      "sha256": "d021562a8d37c1ec393fa1eccf3484f5c989b09e5067807186109a5099b5973d"
+    },
+    "boards/sentinel_f407/tools/firmware_tool.py": {
+      "bytes": 11899,
+      "sha256": "fdf7acd96448038f42bdf072f25246fe17a4b406857cffab53c5cbe07da7a9c6"
+    },
+    "boards/sentinel_f407/tools/firmware_tool_model.py": {
+      "bytes": 18106,
+      "sha256": "d5f25937a6e57f065ec3cd41c791ccfe86efbade8f11c9f2c1933f7ef066810a"
+    },
+    "boards/sentinel_f407/tools/integration_handoff.py": {
+      "bytes": 17390,
+      "sha256": "ce6baacbb0d7681c91eca0da05071ee3ba0210da150b38c80e75d418dea0667e"
+    },
+    "boards/sentinel_f407/tools/licenses/pyserial-LICENSE.txt": {
+      "bytes": 1885,
+      "sha256": "f91cb9813de6a5b142b8f7f2dede630b5134160aedaeaf55f4d6a7e2593ca3f3"
+    },
+    "boards/sentinel_f407/tools/monitor_probe.py": {
+      "bytes": 4199,
+      "sha256": "33aa747c39516ef6eeefce7cdf07c4246c5601b497dd884a3c72ca5b85e021dd"
+    },
+    "boards/sentinel_f407/tools/monitor_swd.py": {
+      "bytes": 31795,
+      "sha256": "a53a44a79ff887d3a205f11f258327f679f0564b5ac13a4f0233486e1e83e48a"
+    },
+    "boards/sentinel_f407/tools/motor_bench.py": {
+      "bytes": 30082,
+      "sha256": "09630342379fa6365adf5c03f7a74f73f345b7118e16eb734bd1e9ed2a278513"
+    },
+    "boards/sentinel_f407/tools/motor_bench_console.py": {
+      "bytes": 34942,
+      "sha256": "ece2d0027315b3406a0079daac487bf6de6e60e940624de9dec375ecce45fa65"
+    },
+    "boards/sentinel_f407/tools/motor_bench_console_model.py": {
+      "bytes": 5897,
+      "sha256": "e4777e72e530890b10185b3317e4203e6a68fe04802df48cb981123096d5522e"
+    },
+    "boards/sentinel_f407/tools/motor_bench_experiment.py": {
+      "bytes": 6366,
+      "sha256": "9ddc7939d1f3835ea3fc68992ce68b883a37eb23328c47c7517f382f00eb84c2"
+    },
+    "boards/sentinel_f407/tools/motor_bench_identify.py": {
+      "bytes": 6059,
+      "sha256": "dbbd666a889ac405600aa8312fd5aba570be1b6676b4f9d41e0d3e318fa2fa79"
+    },
+    "boards/sentinel_f407/tools/motor_bench_trace.py": {
+      "bytes": 12496,
+      "sha256": "092f4a6e2469ec4a3e4dc0caab99cd8e2f79f28a78571a10141f60d94cbee64c"
+    },
+    "boards/sentinel_f407/tools/motor_bench_tune.py": {
+      "bytes": 3627,
+      "sha256": "11d1a7eb7f29315931f5b99aa65838a1dcce07e7932d8baab47eafeaa808a798"
+    },
+    "boards/sentinel_f407/tools/package_capture_handoff.py": {
+      "bytes": 6101,
+      "sha256": "f6c2fd8e080e86b974979553f3c45bf53e6548153cf22c8ac3c2b25aebb2b652"
+    },
+    "boards/sentinel_f407/tools/package_chassis_handoff.py": {
+      "bytes": 6039,
+      "sha256": "70243c13ec71f9568f442ba2624e8dce32f317bf36d8c921d8cb5f4e2e59c6fb"
+    },
+    "boards/sentinel_f407/tools/package_s5_handoff.py": {
+      "bytes": 5692,
+      "sha256": "7b8d4be7890936ec4b1a2ea22a0687db38d4233c1bf743b7b447e826cc0515eb"
+    },
+    "boards/sentinel_f407/tools/sentinel_capture.py": {
+      "bytes": 26046,
+      "sha256": "615873e259890318293c5ca02513fbf1de6865b74cf378c23bfabd7872b8cc3a"
+    },
+    "boards/sentinel_f407/tools/uart_probe.py": {
+      "bytes": 1742,
+      "sha256": "edc92635c7b98a2efe1867622f546b24bdc695f366937a93c455d3b1f3a0ad9c"
+    },
+    "boards/sentinel_f407/tools/usb2can_probe.ps1": {
+      "bytes": 5170,
+      "sha256": "d3fc5cccc1d0628d28243cd7e9aae9223fec2bfa3991022ca351e16c62fe11f7"
+    },
+    "cmake/arm-none-eabi.cmake": {
+      "bytes": 1093,
+      "sha256": "a3f5a1f680b1aa3436a0d46f18767a87055b434bca07443bd3220b732ec07d14"
+    },
+    "docs/README.md": {
+      "bytes": 4283,
+      "sha256": "058399539244601e26c34d7e352f4522f4b9b261440064a0cd56a91aab56dede"
+    },
+    "docs/boards/sentinel_f407/README.md": {
+      "bytes": 6446,
+      "sha256": "3b16994de8d2df05e51f2c4f15c55a590f0314c06793591a22036a5bd37fe520"
+    },
+    "docs/boards/sentinel_f407/接口与接线注意.md": {
+      "bytes": 9388,
+      "sha256": "8bdb1e95d18b64fb8b5d47c77f45b875b9727685fc6190e76e6ed610ce613a1c"
+    },
+    "docs/boards/sentinel_f407/生成与构建.md": {
+      "bytes": 22989,
+      "sha256": "f81b6c44924541b7838ceef008c0912aa0ae435f8b64fc749ecf8aaf89bba137"
+    },
+    "docs/boards/sentinel_f407/资源与并发预算.md": {
+      "bytes": 21303,
+      "sha256": "1c3eb18f10a6d3e522562a1060ae3aea2282f4631e6e3899d26a92f74e429e4e"
+    },
+    "docs/getting-started/环境部署.md": {
+      "bytes": 14838,
+      "sha256": "e7d1164d2474132c2ac2b1dfb7d4643fe0bcd72cac6cc6b12478867c093e1fef"
+    },
+    "docs/getting-started/第一次构建与运行.md": {
+      "bytes": 9921,
+      "sha256": "be7390c5ea57d967cd571278096e1e6a300acc91abd3a12368a54c58323fb2fd"
+    },
+    "docs/guides/Agent-底盘云台联调.md": {
+      "bytes": 15189,
+      "sha256": "ce295a08a24cd022e0e608afbb9a76b6de0b5632f94edf3637a7b5270b9dcd59"
+    },
+    "docs/guides/GM6020单电机测试.md": {
+      "bytes": 17987,
+      "sha256": "76dcba628e9303ab598889888d760fd65543a385adda5aff90a583b431e115e4"
+    },
+    "docs/guides/S5波形调试交接.md": {
+      "bytes": 4847,
+      "sha256": "78b8c9fbff05525876d53444036c413b6f00feab1afc55337bedb73b67b76f4e"
+    },
+    "docs/guides/串口观测与应用接入.md": {
+      "bytes": 12219,
+      "sha256": "4741680e0bb96338d235614aeadfc12a64af326003703d24bb82d91f90bb96d1"
+    },
+    "docs/guides/云台参数表.csv": {
+      "bytes": 783,
+      "sha256": "bb73067b2419f914a2dc535f92eab0fd40e5cd607d908446a4e8d63d8ba4de05"
+    },
+    "docs/guides/云台实车调试交接.md": {
+      "bytes": 5781,
+      "sha256": "0489c23e0a47fa3fe8433ec8884e291d97fade6e6ce8512fe6ef75824465f99a"
+    },
+    "docs/guides/从C到现代C++入门.md": {
+      "bytes": 13138,
+      "sha256": "c914c14d0548c64101a34164068d14fde584de2b38f0a63a6c154a0d534bdd59"
+    },
+    "docs/guides/发射参数表.csv": {
+      "bytes": 666,
+      "sha256": "ec4dab3742b0fd180d51bb2f131d2838144e850d8ce6414e0fd8fc24de0dfe44"
+    },
+    "docs/guides/发射机构实车调试交接.md": {
+      "bytes": 5575,
+      "sha256": "70b2c3c5ecafe61ef741b210b90257f561c7018a3a40ae2645fc39a237744dfb"
+    },
+    "docs/guides/哨兵只读采集与人工标定.md": {
+      "bytes": 35951,
+      "sha256": "bd4994c892170a1b77f0346d4bc0bbb8ace557ee83d0c0b15629b5245313b4a5"
+    },
+    "docs/guides/固件刷写与上位机对应.md": {
+      "bytes": 6394,
+      "sha256": "d55be45727319262a0c7846edb6164ab6329a880028c0154dc7d1faf294dbfd5"
+    },
+    "docs/guides/实车只读采集交接.md": {
+      "bytes": 9249,
+      "sha256": "8fafbc099fb2a98c10d864d58a399fdb252a24519b46ef370cf38918b12991e0"
+    },
+    "docs/guides/应用装配与接入.md": {
+      "bytes": 7306,
+      "sha256": "9e2b9484f1b8c6399618fc5efa4a934f44e68d2c51ed9e344cc04bdb09f24e67"
+    },
+    "docs/guides/底盘CAD基线.json": {
+      "bytes": 3707,
+      "sha256": "6e83417cfc450013d748811299de6af6a1de67160c071707b2a1a7e7063f744a"
+    },
+    "docs/guides/底盘参数表.csv": {
+      "bytes": 1990,
+      "sha256": "5b5edf6b56d6511bcffaed1178ac861ce8f477ae1fafac368331e36b2ff6c41e"
+    },
+    "docs/guides/底盘实车调试交接.md": {
+      "bytes": 8011,
+      "sha256": "f5e58a99277da96efc3777777e817f3d0b5d2831754c3d6a6ce02fc1acb3f6f0"
+    },
+    "docs/guides/开发与验证流程.md": {
+      "bytes": 7213,
+      "sha256": "bf97c5c7f614a088477159296521568e5594418d218ac8ad77668db006384ca6"
+    },
+    "docs/guides/项目分层与代码导航.md": {
+      "bytes": 8782,
+      "sha256": "ef2d856b8653232a4bbcb2e9888b9aa8226f6ae680e74b4147641e344350900b"
+    },
+    "docs/modules/README.md": {
+      "bytes": 2721,
+      "sha256": "f91a369576fa27edafe5d94e8359d3762f84be29550b5d744ed3fdffa621db40"
+    },
+    "docs/modules/control/PID.md": {
+      "bytes": 5945,
+      "sha256": "da7161bc1fcd975c79ad082eb68bdc0b499a6260fe15d33d0fd8c408fec5349e"
+    },
+    "docs/modules/control/位置串级.md": {
+      "bytes": 2586,
+      "sha256": "685fd9cb57ae7866cf34d82dde67ae6f0f59e7c69ecbba1d57ce032445163002"
+    },
+    "docs/modules/control/温度控制.md": {
+      "bytes": 2352,
+      "sha256": "2b7a3358e59182d4f9ffbab834aeb311207832ffc247f9dfdba41456c4d90e28"
+    },
+    "docs/modules/control/速度控制链.md": {
+      "bytes": 9789,
+      "sha256": "8500b61fe4ce66ab1b8b585b6b1a64e41872802fff788916d7c9fd06d0f51a3e"
+    },
+    "docs/modules/core/会话与执行上下文.md": {
+      "bytes": 5657,
+      "sha256": "5da3d702b2a2dd6f1787fbe9acf1ddc57023ce42d01460e339be7b6b7d3004ad"
+    },
+    "docs/modules/core/周期规划.md": {
+      "bytes": 4038,
+      "sha256": "d060f6a87e6fc16cd7645039221938475065dbff47b3914a55b8362ed5f5828e"
+    },
+    "docs/modules/core/授权门.md": {
+      "bytes": 5990,
+      "sha256": "dad783e083da610fda2aa2a2182e07e020c8d130e8744ae4e1d5912c46cdd541"
+    },
+    "docs/modules/core/时间与时效.md": {
+      "bytes": 5619,
+      "sha256": "75486740c0bb28561b37997beedef17c7cf5a1ff260741fa3d7a624794296421"
+    },
+    "docs/modules/core/通道与数据交换.md": {
+      "bytes": 6660,
+      "sha256": "44e5c6d566d6af009dc2ae4752ab625744b85ae8b80b4717e7472fb4cc40c715"
+    },
+    "docs/modules/drivers/BMI088惯导.md": {
+      "bytes": 6297,
+      "sha256": "018cfef8d664220e29f7cada96c01796562f12b80eaf92a0475b97d49fe6a9ce"
+    },
+    "docs/modules/drivers/DJI电机.md": {
+      "bytes": 5937,
+      "sha256": "2abaf46fcbaa29c0615de07b6b34f5d0d14b0b605ec1a1d41425f56205b51dbd"
+    },
+    "docs/modules/drivers/DJI设备与分组执行.md": {
+      "bytes": 8334,
+      "sha256": "2c0c4d18eceaaaa765160501753e99fc9f5a58db4beff3ae46b9762149b1eeac"
+    },
+    "docs/modules/drivers/DR16遥控.md": {
+      "bytes": 6645,
+      "sha256": "b71abe439be5d2a1b82f2bf4b72510ac9fa88f55a41b0c4d29cffcb30a24b944"
+    },
+    "docs/modules/drivers/设备在线监视.md": {
+      "bytes": 4909,
+      "sha256": "7f3f4d3c8435a66641a3c32968f5336fbf12c1d38482519e2c7b18d7019d839a"
+    },
+    "docs/modules/estimation/姿态估计.md": {
+      "bytes": 4725,
+      "sha256": "9bb085363f9c302ff7cb499b6985716e17e7fd6d0ce92beae3cb600e9e4ffa85"
+    },
+    "docs/modules/monitor/监控注册表.md": {
+      "bytes": 4873,
+      "sha256": "e69fb781b770b9ff118386563a7fe0e14814ba375efbda888be11d2132c658ba"
+    },
+    "docs/modules/motion/DJI轴门面.md": {
+      "bytes": 6859,
+      "sha256": "7c1b125c5d4c6eef1c82f8e6af1cf5a9ff9b881f29669d1a64efd1ad3b6e1685"
+    },
+    "docs/modules/motion/全向轮运动学.md": {
+      "bytes": 2978,
+      "sha256": "1a93e4571d40fdee8633e29661b731bcb940978747bc3c654267a94b3c609cc7"
+    },
+    "docs/modules/transport/CAN接口.md": {
+      "bytes": 4097,
+      "sha256": "ee6d2005c632526531f815bb4feb0c9543dc0972352824d4dbd6ef5859369160"
+    },
+    "docs/modules/transport/UART字节管线.md": {
+      "bytes": 6264,
+      "sha256": "333aedb4329a29af88c1ee48065b65d62b950ed95dabedc510f915bd192b5386"
+    },
+    "docs/platforms/host.md": {
+      "bytes": 3468,
+      "sha256": "b258f4bb50dd24fcfea60bbcb4efae654f6e3b023d8dbd087fc0af2171dfe03f"
+    },
+    "docs/platforms/stm32f407.md": {
+      "bytes": 6326,
+      "sha256": "e10e7f1ad661f20fce4a258a96b9ba811040d7a928a11114f7fdb08899a917d9"
+    },
+    "docs/robots/sentinel/calibration-09251300.json": {
+      "bytes": 1967,
+      "sha256": "f49314c9c6807fffd6c378c3d25dcadc8159e9230cb9fd6930fd89bd2bb1451a"
+    },
+    "docs/robots/sentinel/实施与验收.md": {
+      "bytes": 127642,
+      "sha256": "30fa5830ab2d6fe7a7c25cb512558e47ec3fc7eeaaac7b1f5a5e7cfe64a448e3"
+    },
+    "docs/robots/sentinel/应用配置与换算基线.md": {
+      "bytes": 28852,
+      "sha256": "cc8ea1b9d1e09eeb544291d0c39137458be8d0a12a60b2b6cb6bee1b53b39bb2"
+    },
+    "docs/robots/sentinel/应用首轮与契约冻结.md": {
+      "bytes": 23772,
+      "sha256": "1c49a57b2a5fcc099f8d6482bb40197415a1ae1457a3307b7895a61fb7c785e8"
+    },
+    "docs/robots/sentinel/正式APP接入说明.md": {
+      "bytes": 33540,
+      "sha256": "7b126b3e63ff5e5d1a6a5dd554bc2616ef804571707869f5b59eb7a2b7e8f73f"
+    },
+    "docs/robots/sentinel/现有能力与待确认Checklist.md": {
+      "bytes": 59869,
+      "sha256": "1fd497f0e6e05a6f379e964e0585dde3357ece1e982abf8e4efaea30c2aa11f7"
+    },
+    "docs/文档规范.md": {
+      "bytes": 4601,
+      "sha256": "01a7fdd8a26209e7c844e3d49fb23e251e6a7e3ec0d0a691737dcd1ec9ec5f36"
+    },
+    "docs/架构设计.md": {
+      "bytes": 14993,
+      "sha256": "113d45519c2deda8b779c1bad7dab496a4e43a1f6e12d785128cc1375f63d7fc"
+    },
+    "examples/gm6020_ident_sim.cpp": {
+      "bytes": 5581,
+      "sha256": "34f7d06bd814bed9915e2be2760269e1050795248b6e1314bbf16b3c40c524da"
+    },
+    "examples/host_app_example.cpp": {
+      "bytes": 42961,
+      "sha256": "3a3ea6048b85e46db444c1daf6a36bb84aff0bafc712cf5c41470096c8a57fa4"
+    },
+    "examples/host_assembly.cpp": {
+      "bytes": 5184,
+      "sha256": "b133dc63cfad57705c223649787da79a09a330a8ab2807126a375ff388022fb6"
+    },
+    "examples/host_link_example.cpp": {
+      "bytes": 24458,
+      "sha256": "1317ff4e4a1a04b67a86e101468aa1b80f391e346d1e2b8f6136a53d822e761c"
+    },
+    "examples/host_single_axis.cpp": {
+      "bytes": 2962,
+      "sha256": "8329957c8bd5c115a97276352fb0742a7a1e44031f6c01860f87e5b669994253"
+    },
+    "examples/sentinel_app_host_link.cpp": {
+      "bytes": 20143,
+      "sha256": "4ab1c12041e980526d78507353f995dd6ac0a8ec2cb3896c039023ecbebab1c7"
+    },
+    "examples/sentinel_replay.cpp": {
+      "bytes": 4683,
+      "sha256": "9c033c796244a63433e47e20b191349c50632b0809fa81777edaa4fbdba5ee72"
+    },
+    "include/ec/channel.hpp": {
+      "bytes": 4054,
+      "sha256": "fa8bdcfa5efc4c636c1ebeecce7d1dd3ab45549bf74aaf25771f4d8638b4ec96"
+    },
+    "include/ec/control/angle.hpp": {
+      "bytes": 1508,
+      "sha256": "d6ff7a8f653115d508ebad27d0df0eed53ee83cfa330118bf98743a371509430"
+    },
+    "include/ec/control/authority.hpp": {
+      "bytes": 3586,
+      "sha256": "843e6e371fe9c55f06e28a290edad9ed08017efd948b9682a5929c8e56fcaccb"
+    },
+    "include/ec/control/control_mode.hpp": {
+      "bytes": 416,
+      "sha256": "ec5390c5b14925176021597c55b6d8b610d2413ad26ed0fd4744beabc97557fe"
+    },
+    "include/ec/control/current_scale.hpp": {
+      "bytes": 1644,
+      "sha256": "1a8beae116a2a24b84a013763ff6e60194eb00238f869c8e8445407214c805af"
+    },
+    "include/ec/control/execution_context.hpp": {
+      "bytes": 2550,
+      "sha256": "58ee989aed1f79bc39ddb79f51a2526aff1679e432e8b5e42ec53ab047bc9f3a"
+    },
+    "include/ec/control/pid.hpp": {
+      "bytes": 1851,
+      "sha256": "7e25e03506d3221ef541bf217eeb7e57fc26a6760c573411f3645daef6c4116c"
+    },
+    "include/ec/control/position_loop.hpp": {
+      "bytes": 4498,
+      "sha256": "5bbae65383a03a4a9f0878254f4aada8fbb5739d26fe1461d8e8dcf4e5ff02c0"
+    },
+    "include/ec/control/thermal.hpp": {
+      "bytes": 2019,
+      "sha256": "78a6cb4b90f68d325bc56be0cd773eb9c10f37cd6de935ee19a9c8fe9e03193d"
+    },
+    "include/ec/control/velocity_loop.hpp": {
+      "bytes": 3319,
+      "sha256": "4997260a7cb1f7cc62bdad9b422af3efefddc9ba2857518d025611e359e22b04"
+    },
+    "include/ec/drivers/bmi088.hpp": {
+      "bytes": 4537,
+      "sha256": "be3a8bbf0deea2d48a86241f53b80c1ac81c80149f6e5a84d034fbb073d8cb8c"
+    },
+    "include/ec/drivers/bmi088_device.hpp": {
+      "bytes": 4276,
+      "sha256": "d917144c738e01b8e4aff8cc32da4bac15c40a483e9a38c64ca7162b759019fc"
+    },
+    "include/ec/drivers/bus_layout.hpp": {
+      "bytes": 1980,
+      "sha256": "d107fd081c7811b8721f12f7a31d3f6075fa2c9aa91f03f051f4dbe80ae537b0"
+    },
+    "include/ec/drivers/device_watch.hpp": {
+      "bytes": 2383,
+      "sha256": "0c2394150e672e6ba6b2d6f00977ed9e4b1de3c35e66427e517734430cbfbade"
+    },
+    "include/ec/drivers/dji.hpp": {
+      "bytes": 1587,
+      "sha256": "e00e2acb8a0c559eb7a12877ca1a54b01738206904a27f29b40a7c919c170ee6"
+    },
+    "include/ec/drivers/dji_device.hpp": {
+      "bytes": 4029,
+      "sha256": "01bb902266bc90f5a69b6c747b7cb4496f128a135aa2ba3574d09ed7bffdb6af"
+    },
+    "include/ec/drivers/dm.hpp": {
+      "bytes": 9808,
+      "sha256": "a53557fbeafa2c3481685589f74714e302be14c5402b1d7f3b97a4fe16f7ea2a"
+    },
+    "include/ec/drivers/dm_device.hpp": {
+      "bytes": 4345,
+      "sha256": "d4019e0e185a8a9d7a9cb01c29e9f9db8a1adc08b0a427d610b8bc63d0af619f"
+    },
+    "include/ec/drivers/dr16.hpp": {
+      "bytes": 4846,
+      "sha256": "5bdcb17664460bf5fd768d6ed0d68df8b74b67f49cbf461d9c5bfde867951166"
+    },
+    "include/ec/estimation/attitude.hpp": {
+      "bytes": 7444,
+      "sha256": "5467bf4ad4dd21b1b5699c5963e56de88d85c614216581560f057fb0972a6516"
+    },
+    "include/ec/execution_gate.hpp": {
+      "bytes": 2596,
+      "sha256": "8212e3c3f0f41ce1881d2678819021b397a6aac8268f7a3671faf5f7aa4d3172"
+    },
+    "include/ec/input/dr16_input.hpp": {
+      "bytes": 5151,
+      "sha256": "c5155fbb791849690731950ba102373d903aa2175856393028ad5068fabf9e20"
+    },
+    "include/ec/monitor/registry.hpp": {
+      "bytes": 8307,
+      "sha256": "5d62a012425da9c521aa486a7d9374047dedc89de6b44c1419bef65c51d2d8a8"
+    },
+    "include/ec/motion/dji_axis.hpp": {
+      "bytes": 9137,
+      "sha256": "e4af2f642f705967d5bf0dc0fe1912d2701e0b996b3944ed06ef35cb20b48f12"
+    },
+    "include/ec/motion/omni_kinematics.hpp": {
+      "bytes": 2065,
+      "sha256": "5886275b30b55146d3e3a4e3f31a5d95ab2b7af2110048ae96fb197fd05c6fd8"
+    },
+    "include/ec/periodic.hpp": {
+      "bytes": 977,
+      "sha256": "c93d8b52c2c3861ab975441c00f25695972e42add3c16fa3de91089a4657841a"
+    },
+    "include/ec/platform/host.hpp": {
+      "bytes": 349,
+      "sha256": "95b895190c14b1d5292333af4d32164944dac1a3a1dacde44498e8051afe21e7"
+    },
+    "include/ec/session.hpp": {
+      "bytes": 6802,
+      "sha256": "c48d628d7d82921d1a72fd4ee379a1fd6dce2fb743f5583d7fbfc7b9b6aa36c3"
+    },
+    "include/ec/time.hpp": {
+      "bytes": 2390,
+      "sha256": "2fca1ef0393093b3819c6b2ce253937c86976fea323f3a7de465763f4163fdb3"
+    },
+    "include/ec/transport/byte_pipe.hpp": {
+      "bytes": 4790,
+      "sha256": "e5c904dc27380ce1ca30f4ada9742cacde81e49689d8c7e837d19722d0c9c52e"
+    },
+    "include/ec/transport/can.hpp": {
+      "bytes": 890,
+      "sha256": "4c9c627b9198435fa7532747ccca619157fa6a50b967aac18763dbf488786dca"
+    },
+    "include/ec/transport/uart_frame.hpp": {
+      "bytes": 4053,
+      "sha256": "e571efe1bcaaaba750f776427fc5139182ed3f757466bc0ad7163108183546b0"
+    },
+    "platform/stm32f407/CMakeLists.txt": {
+      "bytes": 2249,
+      "sha256": "a87abe94e46e70a35ee8df519a25854a4106cac2e36a731e12bca7ce8647eac9"
+    },
+    "platform/stm32f407/include/ec/platform/stm32f407.hpp": {
+      "bytes": 2631,
+      "sha256": "1807c4e834da2d7d240227252b7e890a4402e2ffcf21fcaebe3ee3366feed16e"
+    },
+    "platform/stm32f407/include/ec/platform/uart_dma.hpp": {
+      "bytes": 5286,
+      "sha256": "1abd3f35540cfd0c20e621dbac72aad3e4f25cfb471cc1ee782c63e9a1e510e0"
+    },
+    "platform/stm32f407/src/adapter.cpp": {
+      "bytes": 2539,
+      "sha256": "2592938307519bb415b5fd2d377f5862f545bb27dbc2f14eec5e870ef2caccaf"
+    },
+    "platform/stm32f407/src/contract_compile.cpp": {
+      "bytes": 730,
+      "sha256": "b9f256c01cfcd51e204cad73cb0132de662f863d34ffff60d382331734d28afe"
+    },
+    "references/records/10310221/云台参数表.csv": {
+      "bytes": 5529,
+      "sha256": "03aa0f58d44118ed5c47cf641f5c8bf0398c3aa31a3b596c815f92693207ad32"
+    },
+    "references/records/10310221/底盘参数表.csv": {
+      "bytes": 3482,
+      "sha256": "eaf953d8f8a0b6844ca6d1fc6a5f96e4235d1e122025444a00b96044dae9747f"
+    },
+    "requirements-dev.txt": {
+      "bytes": 135,
+      "sha256": "b5ad67698aac0e91c8f0dddb686c3fb7841962af0ff8c2282e09c44b356c5c61"
+    },
+    "robots/sentinel/app/sentinel_app.cpp": {
+      "bytes": 31086,
+      "sha256": "6b766108f283bd67d3684ee905e9ff89e424b3deb9688e5e310c69f78b7e519c"
+    },
+    "robots/sentinel/app/sentinel_app.hpp": {
+      "bytes": 14006,
+      "sha256": "be312c4a4f687f7e93b33942fdd8982e6a54a310afc5ed32bc9240928690ff7b"
+    },
+    "robots/sentinel/app/sentinel_authority.cpp": {
+      "bytes": 7987,
+      "sha256": "0da8335efb57e1fd81fdde5e802ae27296457eb36cb2c31e8a3ff4a9539c22e2"
+    },
+    "robots/sentinel/app/sentinel_authority.hpp": {
+      "bytes": 6830,
+      "sha256": "3df3773e6f10e313c0a33dedcb6e632956cb383e57539e5d1f36cdc2ca2a5615"
+    },
+    "robots/sentinel/app/sentinel_config.cpp": {
+      "bytes": 25005,
+      "sha256": "0a77e1c72f3d538c00c925eb68471a463eea307f5dd93dc69a53752fccdeebf8"
+    },
+    "robots/sentinel/app/sentinel_config.hpp": {
+      "bytes": 9297,
+      "sha256": "7bcc2aeb2eb80e0a5c246e29d9701c40dc2ca8183832ab933e7adb4c5befcade"
+    },
+    "robots/sentinel/app/sentinel_cycle.cpp": {
+      "bytes": 10440,
+      "sha256": "268b371fb08217da08f3ee184be18de5ab5d889d043cd90a949bc3c7ad971545"
+    },
+    "robots/sentinel/app/sentinel_cycle.hpp": {
+      "bytes": 4810,
+      "sha256": "8fed5ca888f6a75e99c93c06bb1f0d27af793b3d63e501ddaee246aebe16f331"
+    },
+    "robots/sentinel/app/sentinel_execution.cpp": {
+      "bytes": 47591,
+      "sha256": "aaadd943f49a7d74b3a4e2fcba1d8445203d178c405c6bd94caf797a64dfe2df"
+    },
+    "robots/sentinel/app/sentinel_execution.hpp": {
+      "bytes": 10829,
+      "sha256": "5cbd09d2f063f712fd74519bb5af1c698fec0c490db3fbcede3a52ad88775222"
+    },
+    "robots/sentinel/app/sentinel_faults.cpp": {
+      "bytes": 2189,
+      "sha256": "d674eaee286e6d69027d2ecf831911c61e890d63ddc14dbcf26d9d21107975f2"
+    },
+    "robots/sentinel/app/sentinel_faults.hpp": {
+      "bytes": 2140,
+      "sha256": "d3016adcdf140cfca7007da477141bcae6bec5476f8fac1b33a62d5eb25d9749"
+    },
+    "robots/sentinel/app/sentinel_kinematics.cpp": {
+      "bytes": 8253,
+      "sha256": "a9474686deb5636af9ebbbe133a5fbcde5aa5832ab0af9c66dfdf38fce4faa82"
+    },
+    "robots/sentinel/app/sentinel_kinematics.hpp": {
+      "bytes": 2703,
+      "sha256": "20c69774d43d79ba2f340b1d4c055f315318c79acbbe3b9abc362856cbfa7d88"
+    },
+    "robots/sentinel/app/sentinel_link.hpp": {
+      "bytes": 2679,
+      "sha256": "299374a4c683d00cc4c71d350bde0de85772b5eab2af9692e573c42989ff84e6"
+    },
+    "robots/sentinel/app/sentinel_param_apply.cpp": {
+      "bytes": 11354,
+      "sha256": "c278cbad6604cd57322d8a1df2ce81cf2eb43ad35a90e141bf0dcfa90ac8bcda"
+    },
+    "robots/sentinel/app/sentinel_param_apply.hpp": {
+      "bytes": 1492,
+      "sha256": "094a53271ec66fd664412a24b22671a0a0888f9a3ab4b0a5d7e2bab4c8fb9e63"
+    },
+    "robots/sentinel/app/sentinel_params.cpp": {
+      "bytes": 8235,
+      "sha256": "9baabba0290446b88c677a6376799d80338786b5fda9498eeae5e0426d7a07cf"
+    },
+    "robots/sentinel/app/sentinel_params.hpp": {
+      "bytes": 3542,
+      "sha256": "1e28e736ce0e0c6108fe07a917a9cfa05fb57438a83153d49ef7b10b90d8b98b"
+    },
+    "robots/sentinel/app/sentinel_perception.cpp": {
+      "bytes": 20440,
+      "sha256": "c1fc9e8990d34707ff712e80062cf88e811bca5dd89a3f374bfd466374a7e98c"
+    },
+    "robots/sentinel/app/sentinel_perception.hpp": {
+      "bytes": 5902,
+      "sha256": "3fec89ad52a74bd6cbc0b15794785ae9686b328b25fb90dfd80c7be58544714f"
+    },
+    "robots/sentinel/app/sentinel_protocol.cpp": {
+      "bytes": 38829,
+      "sha256": "88be2c443a62106c47cd67b1792788a120901467025fd82ab55eabc45c288367"
+    },
+    "robots/sentinel/app/sentinel_protocol.hpp": {
+      "bytes": 13656,
+      "sha256": "035cccabc9f3f5f10bd586cbb51952973c3cc59af1d7637c9071f44c0a60484f"
+    },
+    "robots/sentinel/app/sentinel_remote.cpp": {
+      "bytes": 19808,
+      "sha256": "771d955575c33b27086187ddef14d1c92468c5c8088c0822e9a7d9fdf895313d"
+    },
+    "robots/sentinel/app/sentinel_remote.hpp": {
+      "bytes": 6079,
+      "sha256": "7c2710a49feda3a304f5d2747c61bfca42dd838cb6f99ec2241330065c92c433"
+    },
+    "robots/sentinel/app/sentinel_runtime.hpp": {
+      "bytes": 2992,
+      "sha256": "39ad3c3d6b597618f23b6cece114bb19308571c6154e7a205baf6c02405fdb74"
+    },
+    "robots/sentinel/app/sentinel_telemetry.cpp": {
+      "bytes": 5151,
+      "sha256": "5552b4428718641757060d922b21a8e7078f86df01a8fe996befb314ca42ad9a"
+    },
+    "robots/sentinel/app/sentinel_telemetry.hpp": {
+      "bytes": 1171,
+      "sha256": "efb8440e9f7296e6834d93dcc911b6e71f6b314e7a8feeedc658d13444fe7678"
+    },
+    "robots/sentinel/app/sentinel_types.hpp": {
+      "bytes": 15313,
+      "sha256": "009ee119468ecca4d6b23031c8195d0624eaa92f7b6487a089efa19ca5b44ef1"
+    },
+    "robots/sentinel/capture/capture.cpp": {
+      "bytes": 8019,
+      "sha256": "c97d23a22131bb33395bd8148cdbcdd8b50ca5066c01638f5e00befb95dd4e49"
+    },
+    "robots/sentinel/capture/capture.hpp": {
+      "bytes": 4672,
+      "sha256": "de9016ed147668d16475e83d7359f246a9c7eb47adbdfca5e738293968c7fabd"
+    },
+    "robots/sentinel/host/mechanism_fixture.hpp": {
+      "bytes": 3345,
+      "sha256": "e0bd5c592bf4754be71a0b6e9df641717ee1b075f8569123f41a77081823e31b"
+    },
+    "robots/sentinel/host/sentinel_async.py": {
+      "bytes": 23665,
+      "sha256": "9fbf48b535715f56af17246ede0ff5decfc79ea654fdd1b83bd80261dfd23d51"
+    },
+    "robots/sentinel/host/sentinel_calibrate.py": {
+      "bytes": 15358,
+      "sha256": "ddc53b144ae92e2ccd6516922c251b95955a92ddbb1c81f150b4df82b1faab89"
+    },
+    "robots/sentinel/host/sentinel_capture_station.py": {
+      "bytes": 8680,
+      "sha256": "9d4c0896e87a4d8a44dc489a2d1d1a384ba3f85352c3951624bdbfe8650560fe"
+    },
+    "robots/sentinel/host/sentinel_client.py": {
+      "bytes": 41713,
+      "sha256": "33e1cf38718d72ed0f826393ef235642a866df96601b0a0e7fbdc9417e8a6007"
+    },
+    "robots/sentinel/host/sentinel_console.py": {
+      "bytes": 29774,
+      "sha256": "360684db985421f2fa3a645dc5db469644cbcb97970bb5ce22cbb50932e4c55c"
+    },
+    "robots/sentinel/host/sentinel_console_model.py": {
+      "bytes": 13354,
+      "sha256": "44ea0cfaa42fe0964d18932f548391f235e2bf2b6f4c0871f87d42d3743c4fe0"
+    },
+    "robots/sentinel/host/sentinel_dataset_calibrate.py": {
+      "bytes": 14900,
+      "sha256": "46fc2620bbc33914b8c1b9839a6ec9223f21e792707a9ec8a40c6eaf97997f61"
+    },
+    "robots/sentinel/host/sentinel_dataset_replay.py": {
+      "bytes": 8283,
+      "sha256": "a7079ac17792b79cf547e005aed7ca2ee834c88608dc43843f919a887a70d7c4"
+    },
+    "robots/sentinel/host/sentinel_feedback_audit.py": {
+      "bytes": 10883,
+      "sha256": "842b3e96aea45cafaf57f3549716fc4d98c4632f456e45a8c208363d42f97c9a"
+    },
+    "robots/sentinel/host/sentinel_raw.py": {
+      "bytes": 9921,
+      "sha256": "4c517d213eb849aa9a862acc46d007db081d085e88baadc51f72e9a982f0773b"
+    },
+    "robots/sentinel/host/sentinel_replay.py": {
+      "bytes": 3862,
+      "sha256": "e448ec03f936ee5af6ebb55c8103aa28a45872b393644bfe42c196d67d618a3f"
+    },
+    "robots/sentinel/host/sentinel_stream.py": {
+      "bytes": 11869,
+      "sha256": "11a2dc3bcae28109098b03971a91f34bf3696ce1c119669da860a67416c07a9a"
+    },
+    "robots/sentinel/host/sentinel_test.py": {
+      "bytes": 12554,
+      "sha256": "8c7bc8a5b19eea69e818d57d6065929c9a5089d74e6b1d59007cd98600e3d945"
+    },
+    "robots/sentinel/host/serial_plant.hpp": {
+      "bytes": 5704,
+      "sha256": "4c20d6b51ac9f3b8690f943b72d081b8cb9e37f404e86850d36904bf747f3a1a"
+    },
+    "robots/sentinel/host/sim_plant.hpp": {
+      "bytes": 14133,
+      "sha256": "25553078f406b6fdd9b5533e132387fc19be264120e1c40b4b0d13cea150fedf"
+    },
+    "robots/sentinel/recording/raw_record.cpp": {
+      "bytes": 8790,
+      "sha256": "28ea26e919cc752bb228d1e0c7ae108eeb11441d4f83e7de863e2e74fab3d6ab"
+    },
+    "robots/sentinel/recording/raw_record.hpp": {
+      "bytes": 5343,
+      "sha256": "1b0afa3d8c21aa0a00848a0d4c2ccc26ecd90d44ae46e4f0bfd8bc1a15a546f5"
+    },
+    "src/control/authority.cpp": {
+      "bytes": 3325,
+      "sha256": "12757c7bdcc34bf46cff1a665047e41ed6b88baf9e5ff0fa1fe62a4e50938ed2"
+    },
+    "src/control/pid.cpp": {
+      "bytes": 3292,
+      "sha256": "d5e865a240b5d7de2b412b62553aaabdfc2e234863e3d6b5a5b29763ce84ff69"
+    },
+    "src/control/position_loop.cpp": {
+      "bytes": 4459,
+      "sha256": "3a5f35fcfdaa20f4aefadb6c35c938eba1302ab7e1985b875420180088055db9"
+    },
+    "src/control/thermal.cpp": {
+      "bytes": 1854,
+      "sha256": "8e040cd06c22bb1d1960728a4cf19ee8365e1248e88acd7e7c2f1848105434af"
+    },
+    "src/control/velocity_loop.cpp": {
+      "bytes": 3014,
+      "sha256": "b5ad9c385515c0b357e812c318ab9291cf53c93c6d8628ac412e02ca82db694f"
+    },
+    "src/drivers/bmi088_device.cpp": {
+      "bytes": 6808,
+      "sha256": "ec33497185ec8d1f3e59a2bcdbd0a5488e95545bc7ef1f626293b0cba88fde2a"
+    },
+    "src/drivers/dji.cpp": {
+      "bytes": 3170,
+      "sha256": "5b8afbeee394925d45740bfb1311273b277d2daf1d1e95bbb443bd328712a24d"
+    },
+    "src/drivers/dji_device.cpp": {
+      "bytes": 9070,
+      "sha256": "d206a96a9bd3a37bbaa21623e29493a21bc9209efe0d0e5ec2c18b102715850a"
+    },
+    "src/drivers/dm_device.cpp": {
+      "bytes": 5374,
+      "sha256": "2ab53c88100962cb2c172d2cc6f8d0bc10ac1fcf7c1b77c348c06aa34ed3207d"
+    },
+    "src/estimation/attitude.cpp": {
+      "bytes": 19112,
+      "sha256": "d4602f1fc3d55d8b2753f1b8ef76fbdfb30e4a12804b62f787233fa4720331ec"
+    },
+    "src/monitor/registry.cpp": {
+      "bytes": 7451,
+      "sha256": "014554d0ff044255fcff08d088d17f6131caaf362de12cd44d45f1171afacee5"
+    },
+    "src/motion/dji_axis.cpp": {
+      "bytes": 10180,
+      "sha256": "041b23cf085563472dee93d26f2f70fd0d837d8fa81ea5ae30cd02405bcccf6f"
+    },
+    "src/motion/omni_kinematics.cpp": {
+      "bytes": 4515,
+      "sha256": "2daabd1c5b00c568c1af535f7fa62a2fd9bd65bd7782fde9a9041b41c082ad52"
+    },
+    "src/session.cpp": {
+      "bytes": 4780,
+      "sha256": "7194413f9d3aceea4cad38f457146a4b5d80dc0032f9f265f6856cf6882341f2"
+    },
+    "tests/assembly_tests.cpp": {
+      "bytes": 13704,
+      "sha256": "8730463eeda5b12e39e687649f59922df99f315a415d062a6dc86108d316821c"
+    },
+    "tests/attitude_tests.cpp": {
+      "bytes": 24901,
+      "sha256": "37df32b6c14f020cc844e6fa775365d6d46ccf052b74ea030d42e7e8ba7cc4bc"
+    },
+    "tests/axis_tests.cpp": {
+      "bytes": 21551,
+      "sha256": "673c71b8deb3b34e2da255a3663e7b0213a7d990d5ec66a5a2451f33ce5352ba"
+    },
+    "tests/board_monitor_tests.py": {
+      "bytes": 6737,
+      "sha256": "64afaf4aa6d21a08adb75c5437b84d0a99b4dd7a15d5a2b013b7378c8d1d0a36"
+    },
+    "tests/capture_client_tests.py": {
+      "bytes": 10729,
+      "sha256": "3671487e002459eb84e3aec5cfde697d50c3b62f694ac1a3aea3279b51f2a92d"
+    },
+    "tests/capture_stream_client_tests.py": {
+      "bytes": 5519,
+      "sha256": "db665e90eafccd46b674058b9d0b46c3925a7a28b40668974db922d771fb5b80"
+    },
+    "tests/capture_stream_tests.cpp": {
+      "bytes": 4194,
+      "sha256": "228237076f30980d8a374c3642363742298d5348581468148ec0138bd18a90b0"
+    },
+    "tests/capture_tests.cpp": {
+      "bytes": 11545,
+      "sha256": "5e2b1894c13be56e9b1e9df2db37a9b130041f60e33636f2c967f87ad9f1fa09"
+    },
+    "tests/check_doc_links.py": {
+      "bytes": 1554,
+      "sha256": "92a35bd3ca534917b7adecddd90eae82b3e840e060dcb9ec6382ef6850347c96"
+    },
+    "tests/control_tests.cpp": {
+      "bytes": 23639,
+      "sha256": "fc3b4211b931fa5cabecf5a6817fb0f790373bf002d0c29bf4dc09c5071bd940"
+    },
+    "tests/core_tests.cpp": {
+      "bytes": 42237,
+      "sha256": "bc993b29d243c9e3cacb3efc747b168d859cd8511a0fd96369603f5d62d09988"
+    },
+    "tests/dm_tests.cpp": {
+      "bytes": 25126,
+      "sha256": "661fada6cdd81c7b36e7589ed5fbdf8fbcbfb11f76b71265d7d8780a8f1a682d"
+    },
+    "tests/dr16_input_tests.cpp": {
+      "bytes": 5342,
+      "sha256": "51060820c43f699d1efa304a6882ecccb0144618916dffbb3c1da764d74df511"
+    },
+    "tests/firmware_tool_tests.py": {
+      "bytes": 8692,
+      "sha256": "99c8103cd2d79ba970959eb69d7fca7b13e51e70b284634697b01e7bce33ce33"
+    },
+    "tests/gm6020_bench_tests.cpp": {
+      "bytes": 25228,
+      "sha256": "4da0f5e6601d20290ceb4ba03fc62cf85e5b78946042764d3942918bee85d93f"
+    },
+    "tests/gm6020_identify_tests.py": {
+      "bytes": 2832,
+      "sha256": "c4519518dc2ee303078f8014971733e41c8daaf0ea292a0139985e87c6090821"
+    },
+    "tests/kinematics_tests.cpp": {
+      "bytes": 8732,
+      "sha256": "5134b4bae167e26cfa10038feaf87f800332c52ca993abb20b86bc2f42a150e9"
+    },
+    "tests/monitor_tests.cpp": {
+      "bytes": 19444,
+      "sha256": "8ead591a9856767b8972e9d7722ba31fc5516908ba74fd1a03bc2871f970f364"
+    },
+    "tests/motor_bench_console_tests.py": {
+      "bytes": 6227,
+      "sha256": "f27a63decd182004e2c33a81e08c88cc1b25f6e7f31317a6f9fc0ba3b912771f"
+    },
+    "tests/motor_bench_tests.py": {
+      "bytes": 20931,
+      "sha256": "fceedc71521d60bec303a4ed7740853e2cff3745739702c461035107af272f62"
+    },
+    "tests/sentinel_app_authority_tests.cpp": {
+      "bytes": 35003,
+      "sha256": "a0818321fdded15e0a83543b12476bbef391429961701c74d7f1bd5a8cf166a1"
+    },
+    "tests/sentinel_app_board_config_tests.cpp": {
+      "bytes": 12875,
+      "sha256": "5ae6ed3b620d50badd9b0ad2cb50bca74ae6dd04b52e692d9bb37c078c3a44e4"
+    },
+    "tests/sentinel_app_cycle_tests.cpp": {
+      "bytes": 27960,
+      "sha256": "d8893f961cf5912b872ed27cabcb7fceebc1dcf2c1c55ec4a240c1b1e96ab9ad"
+    },
+    "tests/sentinel_app_execution_tests.cpp": {
+      "bytes": 53295,
+      "sha256": "5ee6476bf8fb92bb92b2718847f846d3e4701b222d5dcc890f7a9c1eb2249e2e"
+    },
+    "tests/sentinel_app_perception_tests.cpp": {
+      "bytes": 32108,
+      "sha256": "16157024a5630cd07fec91bfb2a9b5c1b20275d175c8fc1dd02e3de0a5dffafa"
+    },
+    "tests/sentinel_app_protocol_tests.cpp": {
+      "bytes": 65072,
+      "sha256": "369eeb931bcf93b6294d1b0451e7b5992c8e8d55510e12ff5320f6c7f3291f0c"
+    },
+    "tests/sentinel_app_remote_tests.cpp": {
+      "bytes": 27637,
+      "sha256": "149dd051fd20f2ce9e72d7e1d054d4de875019f26074581a5f6a3dbf8ef0131d"
+    },
+    "tests/sentinel_app_system_tests.cpp": {
+      "bytes": 59653,
+      "sha256": "5c00f455ec4bf23444cb068baa8539fb359b4db7b9ec8edeb9d536dc5cb68f3c"
+    },
+    "tests/sentinel_app_tests.cpp": {
+      "bytes": 19966,
+      "sha256": "ca650134c83b9aa48670bc8b0d723cc1afbac9dd1e09a5f49f31ebe395a4d9fa"
+    },
+    "tests/sentinel_chassis_commissioning_tests.cpp": {
+      "bytes": 11746,
+      "sha256": "0bf1a8ea46bba943973d2baffe1210636fb434eab3b321b6770a0737c967d73b"
+    },
+    "tests/sentinel_console_tests.py": {
+      "bytes": 13261,
+      "sha256": "3881253016ba22a5cdeb2b9faa37250cb8b829e283960ff2a43c23e347833e64"
+    },
+    "tests/sentinel_feedback_audit_tests.py": {
+      "bytes": 3846,
+      "sha256": "992b1249cbf8ce66e89cab541d179f08b0b32614180cffc83fcd5807721dab61"
+    },
+    "tests/sentinel_host_client_tests.py": {
+      "bytes": 43786,
+      "sha256": "7964c5b2736a373b2f0280480b975c59621c0fce335ce538d97b4b4597866bf8"
+    },
+    "tests/sentinel_inertial_tests.cpp": {
+      "bytes": 32429,
+      "sha256": "27355ce43f13250b07d1205dfe0e718cc277723483247476cc8cfd458a7fefd4"
+    },
+    "tests/sentinel_integration_tests.cpp": {
+      "bytes": 11758,
+      "sha256": "ba150f10480795f7b76ab538d797c014819441a14ee08846248ed5b7152350ab"
+    },
+    "tests/sentinel_mechanism_commissioning_tests.cpp": {
+      "bytes": 10846,
+      "sha256": "ed2d1e9d02c4a3f24c942c88e6193c542d2a763af9705e48047c8b6fd2715586"
+    },
+    "tests/sentinel_raw_tests.py": {
+      "bytes": 21829,
+      "sha256": "a4457f4a321d294ed07710c587de2cd70971f4f6a23c151abeb7afdd14b7c199"
+    },
+    "tests/sentinel_serial_tests.cpp": {
+      "bytes": 10135,
+      "sha256": "2bd92dd5f7a00eab75d973e5a3b5b2dd7a1a415ff20d5a29f19708e5cf561ddf"
+    },
+    "tests/session_tests.cpp": {
+      "bytes": 26708,
+      "sha256": "205c2f38a1e26d60c573fdfdb1135c7a1fc5d639d6c7d107f632b49e4065adfd"
+    },
+    "tests/sil_models.hpp": {
+      "bytes": 5318,
+      "sha256": "4bcb4060547241f56ddd67a3bc63bf106eecf7c518e15bdcb5188a39b31277e4"
+    },
+    "tests/sil_tests.cpp": {
+      "bytes": 25466,
+      "sha256": "64fe70e4d11fce60ae36d36008e4b843e902398fd9e44d569ef984ec4e7e67b0"
+    },
+    "tests/uart_frame_tests.cpp": {
+      "bytes": 3954,
+      "sha256": "a9e8233478a845bb6f2fad1bfc37cc037cdf850cddfb620b04c6d129645f30b1"
+    }
+  },
+  "package_id": "sentinel-integration-20261030T202445Z-6a11161fd948",
+  "schema": 1,
+  "tree_sha256": "6a11161fd9489bda12dae0e837e9f74fcdf96754cfc4ae10366390d2e152d618"
+}
