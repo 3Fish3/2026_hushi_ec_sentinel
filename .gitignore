@@ -132,6 +132,12 @@ HANDOFF-*/results/**/*.sraw
 HANDOFF-*/results/**/*.wire
 HANDOFF-*/results/**/*.jpg
 HANDOFF-*/results/media/
+# 联调包的无扩展名构建产物、旧源码备份和逐帧转储; 保留同目录报告与分析结果。
+/HANDOFF-sentinel-integration-agent-20261031/source/build-log-fast.txt
+/HANDOFF-sentinel-integration-agent-20261031/results/main-ident-v2/deploy/ec_sentinel_ident_sim
+/HANDOFF-sentinel-integration-agent-20261031/results/integration-main035/backup/
+/HANDOFF-sentinel-integration-agent-20261031/results/pitch-latency/rawpassive-20261111T005214/burst-*.raw
+/HANDOFF-sentinel-integration-agent-20261031/results/pitch-latency/rawpassive-20261111T005214/burst-*-can.json
 # deliverables/ 是被阻塞的交付快照, 其中 source/ 的 398 个文件有 307~343 个与
 # 同包 source/ 逐字节重复, 因此只保留各快照的 README.md 说明。
 HANDOFF-*/deliverables/**/source/
