@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import queue
 import struct
 import subprocess
@@ -47,6 +48,8 @@ STATUS = 0x46
 DIAGNOSTICS = 0x47
 PERMIT = 0x48
 PITCH_IDENTIFICATION = 0x49
+EXPERIMENT = 0x60
+EXPERIMENT_OPS = {"capability": 1, "status": 2, "prepare": 3, "arm": 4, "start": 5, "stop": 6, "result": 7, "position": 8, "confirm": 9, "cancel": 10}
 HELLO_ACK = 0xC0
 ACK = 0xC1
 TARGETS_ACK = 0xC2
@@ -54,9 +57,11 @@ PARAM_VALUE = 0xC4
 STATUS_SNAPSHOT = 0xC6
 DIAGNOSTICS_PAGE = 0xC7
 PITCH_IDENTIFICATION_STATUS = 0xC9
+EXPERIMENT_SNAPSHOT = 0xCA
 
 RESPONSE_OF = {
     HELLO: HELLO_ACK,
+    EXPERIMENT: EXPERIMENT_SNAPSHOT,
     AUTHORIZE: ACK,
     TARGETS: TARGETS_ACK,
     ALIGN: ACK,
@@ -92,7 +97,7 @@ PITCH_IDENT_FAULTS = (
     "none", "authority", "feedback", "isolation", "envelope", "binding",
     "timing", "torque", "transmit", "cancelled", "reserved_10", "capture",
 )
-PITCH_IDENT_OPS = ("query", "start", "cancel", "reset")
+PITCH_IDENT_OPS = ("query", "start", "cancel", "reset", "start_position", "query_position")
 
 # 对齐类型: 机械关节参考与惯性/odom 对齐偏移是两件不同的事, 不能共用一个数值.
 ALIGN_KINDS = ("joint_reference", "inertial_alignment")
@@ -290,18 +295,20 @@ def encode_pitch_identification(
     cycles: int = 0,
     final_hold_us: int = 0,
     domain: int | None = None,
+    position_amplitude_rad: float = 0.0,
+    position_speed_rad_s: float = 0.0,
 ) -> bytes:
     """domain=None 保持历史 pitch(6) 报文长度; 指定 4/5/6 时在末尾追加一个域字节.
     fire_yaw/main_yaw 走 DJI 电流激励, amplitude_nm 字段语义变为安培."""
     op_code = PITCH_IDENT_OPS.index(op) if isinstance(op, str) else int(op)
     tail = b"" if domain is None else struct.pack("<B", int(domain))
-    if op_code == 1:
+    if op_code in (1, 4):
         body = struct.pack(
             "<IIBIIIfIIII",
             session, sequence, op_code, int(config_epoch), int(reference_epoch),
             int(run_id), float(amplitude_nm), int(half_period_us), int(baseline_us),
             int(cycles), int(final_hold_us),
-        ) + tail
+        ) + (struct.pack('<ff', position_amplitude_rad, position_speed_rad_s) if op_code == 4 else b'') + tail
     else:
         body = struct.pack(
             "<IIBII",
@@ -536,8 +543,51 @@ def decode_pitch_identification_status(payload: bytes) -> dict:
     }
 
 
+def encode_experiment(session: int, sequence: int, command: bytes) -> bytes:
+    """Wrap an inner v1/v2/v3 body; outer business envelope remains v3."""
+    version, op = command[:2] if len(command) >= 2 else (0, 0)
+    expected = {3: 88, 8: 48, 9: 16}.get(op, 12)
+    if (len(command) != expected or version not in (1, 2, 3)
+            or op not in EXPERIMENT_OPS.values() or (version < 3 and op > 7)
+            or command[2] not in (5, 6) or command[3] not in (1, 2)
+            or (len(command) == 88 and command[85:] != b"\0\0\0")):
+        raise ValueError("invalid experiment command layout")
+    return _pack(EXPERIMENT, struct.pack("<II", session, sequence) + command)
+
+
+def decode_experiment_snapshot(payload: bytes) -> dict:
+    from experiment_device_state import decode_experiment_response
+    if len(payload) not in (42, 138, 170) or payload[:2] != bytes((PROTOCOL_VERSION, EXPERIMENT_SNAPSHOT)):
+        raise ProtocolError("experiment snapshot: unsupported envelope/length")
+    session, sequence = struct.unpack_from("<II", payload, 2)
+    body = payload[10:]
+    if len(body) == 160:
+        if body[0] != 3 or body[1] not in range(1, 11):
+            raise ProtocolError("experiment v3: invalid version/op")
+        legacy = bytes((2, min(body[1], 7))) + body[2:128]
+        out = decode_experiment_response(legacy).to_dict()
+        stage, token, config, reference, target, actual, velocity, sample = struct.unpack_from("<4I3fI", body, 128)
+        if stage > 8:
+            raise ProtocolError("experiment v3: invalid stage/feedback")
+        out.update(body_version=3, op=body[1], positioning_stage=stage,
+                   positioning_stage_name=("none", "moving", "settling", "wait-human", "confirmed",
+                       "running", "holding-complete", "cancelled-hold", "invalidated")[stage], human_token=token,
+                   positioning_config_epoch=config, positioning_reference_epoch=reference,
+                   position_feedback_valid=all(math.isfinite(v) for v in (target, actual, velocity)),
+                   position_target_rad=target if math.isfinite(target) else None,
+                   position_actual_rad=actual if math.isfinite(actual) else None,
+                   position_velocity_rad_s=velocity if math.isfinite(velocity) else None, feedback_sample_us=sample)
+    else:
+        out = decode_experiment_response(body).to_dict()
+        out["body_version"] = body[0]
+    # Capability alone is not runtime authorization. Unknown guards block hardware.
+    out["hardware_blocked"] = not out["motion_allowed"]
+    return {**out, "session": session, "sequence": sequence}
+
+
 DECODERS = {
     HELLO_ACK: decode_hello_ack,
+    EXPERIMENT_SNAPSHOT: decode_experiment_snapshot,
     ACK: decode_ack,
     TARGETS_ACK: decode_ack,
     PARAM_VALUE: decode_param_value,
@@ -741,6 +791,25 @@ class SentinelClient:
         self.log.append((RESPONSE_OF[message_type], decoded))
         return decoded
 
+    def experiment(self, command: bytes, *, hardware_blocked: bool = True) -> dict:
+        """Exchange a frozen command; motion-changing operations are blocked by default.
+
+        No authority/permit is acquired here. The offline CLI never uses this API.
+        An explicit opt-out is only a host gate, never proof of hardware readiness.
+        """
+        sequence = self._next_sequence()
+        payload = encode_experiment(self.session, sequence, command)
+        if hardware_blocked and command[1] in (3, 4, 5, 8, 9):
+            raise ProtocolError("experiment hardware_blocked: prepare/arm/start disabled")
+        out = self._request(payload, EXPERIMENT, EXPERIMENT_SNAPSHOT, self.session, sequence)
+        if out.get("envelope") != "error" and out.get("op") != command[1]:
+            raise ProtocolError("experiment response operation mismatch")
+        if command[1] in (3, 4, 5, 6, 8, 9, 10) and out.get("envelope") != "error":
+            sid, nonce = struct.unpack_from("<II", command, 4)
+            if out.get("experiment_session") != sid or out.get("nonce") != nonce:
+                raise ProtocolError("experiment response session/nonce mismatch")
+        return out
+
     def hello(self, nonce: int = 0x11223344) -> dict:
         info = self._request(encode_hello(nonce), HELLO, HELLO_ACK, nonce=nonce)
         self.session = info["session"]
@@ -833,6 +902,8 @@ class SentinelClient:
         cycles: int = 0,
         final_hold_us: int = 0,
         domain: int | None = None,
+        position_amplitude_rad: float = 0.0,
+        position_speed_rad_s: float = 0.0,
     ) -> dict:
         info = self.hello_info
         c_epoch = info.get("config_epoch", 0) if config_epoch is None else config_epoch
@@ -841,6 +912,7 @@ class SentinelClient:
         payload = encode_pitch_identification(
             self.session, sequence, op, c_epoch, r_epoch,
             run_id, amplitude_nm, half_period_us, baseline_us, cycles, final_hold_us, domain,
+            position_amplitude_rad, position_speed_rad_s,
         )
         return self._request(
             payload, PITCH_IDENTIFICATION, PITCH_IDENTIFICATION_STATUS,

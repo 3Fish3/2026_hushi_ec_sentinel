@@ -57,7 +57,9 @@ add_library(ec_sentinel_app STATIC robots/sentinel/app/sentinel_config.cpp
     robots/sentinel/app/sentinel_params.cpp robots/sentinel/app/sentinel_protocol.cpp
     robots/sentinel/app/sentinel_telemetry.cpp
     robots/sentinel/app/sentinel_param_apply.cpp robots/sentinel/app/sentinel_cycle.cpp
-    robots/sentinel/app/sentinel_kinematics.cpp)
+    robots/sentinel/app/sentinel_kinematics.cpp
+    robots/sentinel/app/sentinel_experiment.cpp robots/sentinel/app/sentinel_experiment_wire.cpp
+    robots/sentinel/app/sentinel_oscillation_guard.cpp)
 target_include_directories(ec_sentinel_app PUBLIC robots/sentinel/app)
 target_link_libraries(ec_sentinel_app PUBLIC ec::core ec_sentinel_recording)
 target_compile_options(ec_sentinel_app PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
@@ -76,6 +78,15 @@ if(EC_BUILD_TESTS OR EC_BUILD_EXAMPLES)
 endif()
 if(EC_BUILD_TESTS)
     enable_testing()
+    foreach(_experiment_test IN ITEMS sentinel_experiment sentinel_experiment_wire sentinel_experiment_integration sentinel_experiment_recording sentinel_autotune_execution sentinel_experiment_positioning sentinel_experiment_runtime sentinel_experiment_admission)
+        add_executable(ec_${_experiment_test}_tests tests/${_experiment_test}_tests.cpp)
+        target_link_libraries(ec_${_experiment_test}_tests PRIVATE ec_sentinel_app)
+        target_compile_options(ec_${_experiment_test}_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
+        add_test(NAME ${_experiment_test}_contracts COMMAND ec_${_experiment_test}_tests)
+    endforeach()
+    add_executable(ec_sentinel_experiment_backend tests/sentinel_experiment_backend.cpp)
+    target_link_libraries(ec_sentinel_experiment_backend PRIVATE ec_sentinel_app)
+    target_compile_options(ec_sentinel_experiment_backend PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
     add_executable(ec_sentinel_gimbal_remote_tests tests/sentinel_gimbal_remote_tests.cpp)
     target_link_libraries(ec_sentinel_gimbal_remote_tests PRIVATE ec_sentinel_app)
     target_include_directories(ec_sentinel_gimbal_remote_tests PRIVATE boards/sentinel_f407/include robots/sentinel/host)
@@ -282,6 +293,16 @@ if(EC_BUILD_TESTS)
             "NOT registered. This configuration is PARTIAL and must not be reported as full pass.")
     endif()
     if(Python3_Interpreter_FOUND)
+        foreach(contract IN ITEMS raw_async short_capture positioning_capture experiment_positioning_host)
+            add_test(NAME sentinel_${contract}_contracts COMMAND "${Python3_EXECUTABLE}" -S
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_${contract}.py" -v)
+            set_tests_properties(sentinel_${contract}_contracts PROPERTIES TIMEOUT 60
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        endforeach()
+        add_test(NAME sentinel_experiment_host_contracts COMMAND "${Python3_EXECUTABLE}" -S
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_host.py" -v)
+        set_tests_properties(sentinel_experiment_host_contracts PROPERTIES TIMEOUT 120
+            ENVIRONMENT "SENTINEL_OFFLINE_BACKEND=$<TARGET_FILE:ec_sentinel_experiment_backend>;PYTHONDONTWRITEBYTECODE=1")
         add_test(NAME sentinel_capture_client_contracts COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/capture_client_tests.py" "$<TARGET_FILE:ec_capture_tests>")
         set_tests_properties(sentinel_capture_client_contracts PROPERTIES TIMEOUT 30)

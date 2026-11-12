@@ -201,7 +201,7 @@ struct TestRig {
     std::vector<std::uint8_t> make_pitch_req(std::uint32_t seq, std::uint8_t op,
         std::uint32_t c_epoch, std::uint32_t r_epoch,
         const PitchIdentificationRecipe* recipe = nullptr) {
-        std::vector<std::uint8_t> req(op == 1 ? 43 : 19);
+        std::vector<std::uint8_t> req(op == 4 ? 51 : (op == 1 ? 43 : 19));
         PayloadWriter w{req};
         w.u8(protocol_version);
         w.u8(static_cast<std::uint8_t>(MessageType::pitch_identification));
@@ -210,13 +210,16 @@ struct TestRig {
         w.u8(op);
         w.u32(c_epoch);
         w.u32(r_epoch);
-        if (op == 1 && recipe != nullptr) {
+        if ((op == 1 || op == 4) && recipe != nullptr) {
             w.u32(recipe->run_id);
             w.f32(recipe->amplitude_nm);
             w.u32(recipe->half_period_us);
             w.u32(recipe->baseline_us);
             w.u32(recipe->cycles);
             w.u32(recipe->final_hold_us);
+            if (op == 4) {
+                w.f32(recipe->position_amplitude_rad); w.f32(recipe->position_speed_rad_s);
+            }
         }
         return req;
     }
@@ -276,6 +279,23 @@ void test_available_disabled_default() {
     const auto s_status = decode_status_payload(s_reply);
     CHECK_CODE(s_status.result, ResultCode::rejected);
     CHECK(!s_status.available);
+}
+void test_position_protocol_default_off() {
+    TestRig rig(true);
+    static_cast<void>(rig.hello());
+    const auto query = rig.send_pitch(rig.next_seq(), 5, rig.app.config_epoch(), rig.app.reference_epoch());
+    CHECK(query.size() == 27 && !decode_status_payload(query).available);
+    static_cast<void>(rig.authorize(true, Source::maintenance, rig.next_seq()));
+    rig.prime_motor();
+    auto r = default_recipe(); r.amplitude_nm = 0; r.position_amplitude_rad = 0.01f;
+    r.position_speed_rad_s = 0.1f; r.half_period_us = 300000; r.final_hold_us = 200000;
+    const auto reply = rig.send_pitch(rig.next_seq(), 4, rig.app.config_epoch(), rig.app.reference_epoch(), &r);
+    CHECK(reply.size() == 27 && decode_status_payload(reply).result == ResultCode::rejected);
+    CHECK(!rig.exec.pitch_identification().active());
+    auto truncated = rig.make_pitch_req(rig.next_seq(), 4, rig.app.config_epoch(), rig.app.reference_epoch(), &r);
+    truncated.resize(43);
+    const auto bad = rig.handle_raw(truncated);
+    CHECK(bad.size() == 12 && static_cast<ResultCode>(bad[10]) == ResultCode::bad_length);
 }
 
 void test_request_lengths_and_invalid_op() {
@@ -338,8 +358,8 @@ void test_request_lengths_and_invalid_op() {
     CHECK(reply.size() == 27);
     CHECK(static_cast<ResultCode>(reply[10]) == ResultCode::invalid_value);
 
-    // Invalid op (e.g. 4)
-    auto bad_op = rig.make_pitch_req(rig.next_seq(), 4, rig.app.config_epoch(), rig.app.reference_epoch());
+    // Invalid op (first value beyond the extended protocol)
+    auto bad_op = rig.make_pitch_req(rig.next_seq(), 6, rig.app.config_epoch(), rig.app.reference_epoch());
     reply = rig.handle_raw(bad_op);
     CHECK(reply.size() == 12);
     CHECK(static_cast<ResultCode>(reply[10]) == ResultCode::invalid_value);
@@ -597,6 +617,7 @@ void test_dji_domain_dispatch() {
 }
 
 int main() {
+    test_position_protocol_default_off();
     test_available_disabled_default();
     test_request_lengths_and_invalid_op();
     test_ownership_and_epochs();

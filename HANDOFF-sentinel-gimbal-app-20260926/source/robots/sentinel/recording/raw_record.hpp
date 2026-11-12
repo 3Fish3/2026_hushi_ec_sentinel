@@ -37,8 +37,16 @@ inline constexpr std::uint32_t layout_id = 0x52415701;
 //   data[6]: word6 状态字 (mode[0:7], reason[8:15], pos_valid[16:19], vel_valid[20:23], limited[24],
 //            req_frame[25:26], adopt_frame[27:28], bit29 excitation-active, bit30 excitation-latch)
 //   data[7]: word7 本地 DjiGroupStatus (提交结果, 非 ESC 到达确认)
-enum class Profile : std::uint8_t { stationary = 1, rotation = 2, control = 3 };
-enum class Kind : std::uint8_t { gyro = 1, accel = 2, temperature = 3, can = 4, control = 5 };
+// Profile4 only admits matched Kind6/7 bundles for fire_yaw (5) or pitch (6).
+// State carries targets/feedback/output/param_epoch; aux carries actual command evidence.
+// Pair by (stream, source_sequence, sampled_us, run), not by global sequence.
+// Pitch Kind7 data[7] 为新鲜电调上报力矩(N·m)，未知/陈旧为 NaN；arrived_us 是对应接收时刻。
+// 与 Kind5 的编码前馈力矩、Kind6 的未知归一化输出分别保留，不互相替代。
+enum class Profile : std::uint8_t { stationary = 1, rotation = 2, control = 3, autotune = 4 };
+enum class Kind : std::uint8_t {
+    gyro = 1, accel = 2, temperature = 3, can = 4, control = 5,
+    autotune_state = 6, autotune_aux = 7
+};
 enum class State : std::uint8_t { idle, recording, frozen, full };
 struct Record {
     Kind kind{};
@@ -63,7 +71,7 @@ inline bool encode(const Record& r, std::span<std::uint8_t> out) noexcept {
     return true;
 }
 inline std::optional<Record> decode(std::span<const std::uint8_t> in) noexcept {
-    if (in.size() != record_bytes || in[0] != version || in[1] < 1 || in[1] > 5 || (in[3] & ~7u)) {
+    if (in.size() != record_bytes || in[0] != version || in[1] < 1 || in[1] > 7 || (in[3] & ~7u)) {
         return std::nullopt;
     }
     Record r{static_cast<Kind>(in[1]), in[2], in[3], get32(in, 4), get32(in, 8), get32(in, 12),
@@ -78,6 +86,12 @@ public:
         if (state_ == State::recording && now.us - start_.us >= duration_) { state_ = State::frozen; end_ = now; }
     }
     void push(Record r, MicroTick now) noexcept;
+    // Single-owner / caller-serialized, like push(). Both records are admitted or neither.
+    // Malformed kinds or mismatched stream/source_sequence/sampled_us are rejected.
+    // Consecutive sequence numbers are assigned only after capacity admits both records.
+    // A full continuous queue drops two records (lost += 2); short windows become full.
+    // Payload words (including unavailable-output NaNs) are copied without fabrication.
+    void push_bundle(Record state, Record aux, MicroTick now) noexcept;
     void imu(const drivers::Bmi088Reading& sample, MicroTick now) noexcept;
     void can(std::uint8_t bus, const transport::CanFrame& frame, MicroTick at, MicroTick now,
         std::uint32_t lost) noexcept;
@@ -93,6 +107,20 @@ public:
     [[nodiscard]] bool fast_dm() const noexcept { return state_ == State::recording && profile_ == Profile::rotation; }
     [[nodiscard]] int control_domain() const noexcept { return state_ == State::recording && profile_ == Profile::control ? selected_domain_ : -1; }
     [[nodiscard]] int stream_domain() const noexcept { return selected_domain_; }
+    [[nodiscard]] int autotune_axis() const noexcept { return state_ == State::recording && profile_ == Profile::autotune ? selected_domain_ : -1; }
+    // Experiment admission supports bounded short windows only; streaming bandwidth is unproven.
+    // Pure observation: no state advance or fabricated recorder evidence.
+    [[nodiscard]] bool autotune_ready(std::uint8_t axis, MicroTick now) const noexcept {
+        return !continuous_ && state_ == State::recording && profile_ == Profile::autotune &&
+            selected_domain_ == axis && run_ != 0 && lost_ == 0 && size_ <= capacity - 2 &&
+            now.us - start_.us < duration_;
+    }
+    [[nodiscard]] std::uint32_t autotune_remaining_us(std::uint8_t axis, MicroTick now) const noexcept {
+        return autotune_ready(axis, now) ? duration_ - (now.us - start_.us) : 0;
+    }
+    [[nodiscard]] std::uint32_t autotune_run() const noexcept {
+        return profile_ == Profile::autotune ? run_ : 0;
+    }
     // Pitch 连续流就绪/健康查询. 纯只读: 不推进状态机, 不消费队列, 不产生任何副作用.
     // healthy: 活动中的连续 control 域 6 + 精确非零 run + 无丢条 + 32 位半回绕窗口内未过截止.
     // ready: healthy 全部条件之外, 剩余时长还必须 >= required_us.

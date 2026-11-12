@@ -15,6 +15,7 @@
 #include "sentinel_execution.hpp"
 #include "sentinel_params.hpp"
 #include "sentinel_perception.hpp"
+#include "sentinel_experiment_wire.hpp"
 #include <array>
 #include <cstdint>
 #include <span>
@@ -36,6 +37,7 @@ enum class MessageType : std::uint8_t {
     diagnostics = 0x47,
     permit = 0x48,
     pitch_identification = 0x49,
+    experiment = 0x60,
     hello_ack = 0xc0,
     ack = 0xc1,
     targets_ack = 0xc2,
@@ -43,6 +45,7 @@ enum class MessageType : std::uint8_t {
     status_snapshot = 0xc6,
     diagnostics_page = 0xc7,
     pitch_identification_status = 0xc9,
+    experiment_snapshot = 0xca,
 };
 
 enum class PitchIdentificationOp : std::uint8_t {
@@ -121,8 +124,12 @@ class SentinelHostSession {
 public:
     // host_link_ttl: 会话链路的有效期 (真实收包时刻老化); boot_id: 启动身份, 0 表示不可用.
     SentinelHostSession(SentinelApp& app, ParamStore& params, SentinelExecutor* executor,
-        SentinelPerception* perception, Lifetime host_link_ttl = {}, std::uint32_t boot_id = 0) noexcept
-        : app_(&app), params_(&params), executor_(executor), perception_(perception),
+        SentinelPerception* perception, Lifetime host_link_ttl = {}, std::uint32_t boot_id = 0,
+        const excitation::TrustedDeploymentSafetyConfig* deployment = nullptr,
+        const excitation::TrustedDeploymentRoot* root = nullptr) noexcept
+        : experiment_(deployment && root && root->boot_id == boot_id
+              ? excitation::Wire(*deployment, *root) : excitation::Wire{}),
+          app_(&app), params_(&params), executor_(executor), perception_(perception),
           link_ttl_(host_link_ttl), boot_id_(boot_id) {
         // 构造时就把“启动会话身份”登记给应用: 应用在此之前不能上报 0 ("不提供身份"),
         // 否则首次握手会被核心仲裁当成“会话被替换”而吞掉新会话的第一个请求边沿.
@@ -152,6 +159,8 @@ public:
     [[nodiscard]] bool boot_identity_available() const noexcept { return boot_id_ != 0; }
     // 本会话当前授予的来源 (host/maintenance); 未授权过时为 none.
     [[nodiscard]] Source role_source() const noexcept { return role_source_; }
+    // 激励实验控制器 (供周期层绑定: 同一实例驱动状态机与记录).
+    [[nodiscard]] excitation::Controller& experiment_controller() noexcept { return experiment_.controller_for_cycle(); }
 
     // 会话链路状态: 每个控制周期调用一次.
     //  - alive: 会话存在且距最后一次收包未超过 host_link_ttl;
@@ -216,6 +225,10 @@ private:
         std::span<const std::uint8_t> payload, Tick now) noexcept;
     [[nodiscard]] std::size_t handle_pitch_identification(std::span<std::uint8_t> response,
         std::span<const std::uint8_t> payload, Tick now) noexcept;
+    [[nodiscard]] std::size_t handle_experiment(std::span<std::uint8_t> response,
+        std::span<const std::uint8_t> payload, Tick now) noexcept;
+    // 维护调试操作批准: 需维护持权 + 本机已选择调试维护 + 遥控在线.
+    [[nodiscard]] bool operator_approval_present() const noexcept;
     // 非幂等请求 (会改变状态): 同序号重传必须回放原完整响应, 不重复执行.
     [[nodiscard]] static bool non_idempotent_request(MessageType type) noexcept;
     [[nodiscard]] static bool mutation_request(MessageType type,
@@ -224,6 +237,9 @@ private:
             return true;
         }
         if (type == MessageType::pitch_identification) {
+            return payload.size() > 10 && payload[10] != 0;
+        }
+        if (type == MessageType::experiment) {
             return payload.size() > 10 && payload[10] != 0;
         }
         return false;
@@ -239,6 +255,8 @@ private:
             std::span<const std::uint8_t> result) noexcept;
     };
 
+    // 激励实验会话处理器: 必须声明在 app_ 之前以匹配构造初始化顺序 (-Wreorder).
+    excitation::Wire experiment_{};
     SentinelApp* app_{};
     ParamStore* params_{};
     SentinelExecutor* executor_{};

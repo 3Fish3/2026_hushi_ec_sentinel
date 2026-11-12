@@ -52,7 +52,17 @@ class TestPitchIdentificationProtocol(unittest.TestCase):
         self.assertEqual(PITCH_IDENT_FAULTS[10], "reserved_10")
         self.assertEqual(PITCH_IDENT_FAULTS[11], "capture")
         self.assertEqual(len(PITCH_IDENT_FAULTS), 12)
-        self.assertEqual(PITCH_IDENT_OPS, ("query", "start", "cancel", "reset"))
+        self.assertEqual(PITCH_IDENT_OPS, ("query", "start", "cancel", "reset", "start_position", "query_position"))
+
+    def test_position_wire_preserves_torque_units_and_adds_position_fields(self):
+        payload = encode_pitch_identification(1, 2, 'start_position', run_id=3,
+                                              position_amplitude_rad=.01, position_speed_rad_s=.1)
+        self.assertEqual(len(payload), 51)
+        self.assertEqual(payload[10], 4)
+        self.assertEqual(struct.unpack_from('<f', payload, 23)[0], 0)
+        self.assertAlmostEqual(struct.unpack_from('<f', payload, 43)[0], .01)
+        self.assertAlmostEqual(struct.unpack_from('<f', payload, 47)[0], .1)
+        self.assertEqual(len(encode_pitch_identification(1, 2, 'query_position')), 19)
 
     def test_encode_query_cancel_reset_lengths(self):
         for op in ("query", "cancel", "reset", 0, 2, 3):

@@ -1,4 +1,5 @@
 #include "sentinel_cycle.hpp"
+#include "sentinel_experiment_bridge.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -203,12 +204,52 @@ CycleOutcome SentinelCycle::control(const CycleInputs& inputs) noexcept {
 
     // 5. 应用仲裁: 来源选择/人工停止/故障影响/目标生命周期都在应用层完成.
     app_.update(inputs.now, inputs_);
+    experiment_step(inputs); // AFTER this tick's fresh RC/authority/fault arbitration
     return outcome_;
+}
+
+void SentinelCycle::experiment_step(const CycleInputs& in) noexcept {
+    if (!experiment_) { return; }
+    // A simulation reference must never enter the board actuator target path.
+    // Offline simulation advances Controller/Wire independently of this cycle.
+    if (experiment_->simulation()) { return; }
+    const auto domain=static_cast<Domain>(experiment_->config().axis);
+    auto g=deployment_experiment_guards(app_,executor_,*experiment_,domain,in.now);
+    g.manual_stop=outcome_.manual_stop;g.remote_online=outcome_.remote_online;
+    g.maintenance_authorized=g.maintenance_authorized && in.maintenance_link_alive && in.maintenance_request;
+    g.operator_approved=g.operator_approved && g.maintenance_authorized;
+    g.link_alive=in.maintenance_link_alive;
+    g.timing_valid=in.now_us.has_value() && std::isfinite(in.dt_s) && in.dt_s>0 && in.dt_s<=.005f;
+    experiment_->publish_cycle_evidence(g.timing_valid,in.now.ms);
+    const auto now=in.now_us.value_or(MicroTick{in.now.ms*1000u}).us;
+    // tick also owns bounded positioning, stable HUMAN wait, and post-run hold;
+    // these intentionally return active references while legacy state is armed.
+    const auto ref=experiment_->tick(g,now);
+    if(ref) {
+        TargetSnapshot targets{};
+        targets.domains[domain_index(domain)]=DomainSetpoint{control::ControlMode::position,ref->position_rad,0,YawFrame::joint};
+        if(app_.accept_targets(targets,in.now,Source::maintenance)!=AcceptResult::accepted) experiment_->stop(now);
+        app_.update(in.now,inputs_);
+    }
+    const auto state=experiment_->state();
+    if(state==excitation::State::finishing || state==excitation::State::fault_latched || state==excitation::State::complete) {
+        if (app_.authority().source()==Source::maintenance) { app_.withdraw_target(domain); }
+        app_.update(in.now,inputs_);
+        experiment_->reference_withdrawn(now);
+    }
+    // 标记实验生存期; 协议参数写入口在活动期拒绝变更以保留同一增益元组.
+    executor_.set_experiment_active(state==excitation::State::armed || state==excitation::State::running ||
+        state==excitation::State::finishing || state==excitation::State::fault_latched);
 }
 
 void SentinelCycle::commit(const CycleInputs& inputs) noexcept {
     // 执行提交: 真实设备编解码与 CAN 组帧都在执行层, 编排只负责调用顺序.
     executor_.step(inputs.now, inputs.dt_s, app_, inputs.now_us);
+    if(experiment_ && experiment_->hardware_capable()) {
+        const auto domain=static_cast<Domain>(experiment_->config().axis);
+        const auto g=deployment_experiment_guards(app_,executor_,*experiment_,domain,inputs.now);
+        experiment_->observe_stop(g,inputs.now_us.value_or(MicroTick{inputs.now.ms*1000u}).us);
+    }
     // 命令预测 (不是轮式反馈里程计): 用应用实际采用的 twist 积分.
     const auto& execution = app_.snapshot().executions;
     const bool executing_chassis = std::all_of(execution.begin(), execution.begin()+4,

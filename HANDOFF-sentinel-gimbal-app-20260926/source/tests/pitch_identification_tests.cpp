@@ -43,6 +43,60 @@ void waveform() {
     CHECK(!test.active() && !test.latched());
     CHECK(!test.start(policy(), recipe(), e, {75000})); // same run cannot restart
 }
+void position_waveform() {
+    auto p = policy();
+    auto r = recipe();
+    r.amplitude_nm = 0; r.position_amplitude_rad = 0.01f; r.position_speed_rad_s = 0.1f;
+    r.half_period_us = 300000; r.baseline_us = 100000; r.final_hold_us = 200000;
+    auto e = evidence();
+    PitchIdentification test;
+    CHECK(!test.start(p, r, e, {0})); // Position policy is independently disabled.
+    p.max_position_amplitude_rad = 0.01f; p.max_position_speed_rad_s = 0.1f;
+    auto bad = r; bad.position_amplitude_rad = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!test.start(p, bad, e, {0}));
+    bad = r; bad.position_speed_rad_s = 0.2f; CHECK(!test.start(p, bad, e, {0}));
+    bad = r; bad.final_hold_us = 10000; CHECK(!test.start(p, bad, e, {0}));
+    bad = r; bad.amplitude_nm = 0.01f; CHECK(!test.start(p, bad, e, {0}));
+    constexpr std::uint32_t start = 0xfffff000u;
+    CHECK(test.start(p, r, e, {start}));
+    float last = 0, low = 0, high = 0;
+    for (std::uint32_t t = 0; t <= r.duration_us(); t += 2000) {
+        CHECK(test.tick(e, {start+t}) == 0);
+        CHECK(!test.latched());
+        test.confirm_position_submission(true);
+        const auto offset = test.position_offset_rad();
+        CHECK(std::fabs(offset-last) <= 0.000201f);
+        low = std::min(low, offset); high = std::max(high, offset); last = offset;
+    }
+    CHECK(test.state() == PitchIdentificationState::complete);
+    CHECK(high > 0.0099f && low < -0.0099f && last == 0);
+    PitchIdentification unfinished;
+    CHECK(unfinished.start(p, r, e, {0}));
+    for (std::uint32_t t = 0; t <= r.duration_us(); t += 2000) {
+        static_cast<void>(unfinished.tick(e, {t}));
+    }
+    CHECK(unfinished.state() == PitchIdentificationState::final_hold && unfinished.active());
+    unfinished.confirm_position_submission(false);
+    CHECK(unfinished.latched() && unfinished.fault() == PitchIdentificationFault::transmit);
+    PitchIdentification loaded;
+    auto excessive = e; excessive.gravity_ff_nm = 2.0f;
+    CHECK(loaded.start(p, r, excessive, {1000}));
+    static_cast<void>(loaded.tick(excessive, {1000}));
+    CHECK(loaded.fault() == PitchIdentificationFault::torque);
+    for (unsigned change = 0; change < 7; ++change) {
+        PitchIdentification faulted;
+        CHECK(faulted.start(p, r, e, {1000}));
+        auto altered = e;
+        if (change == 0) { altered.maintenance = false; }
+        if (change == 1) { altered.feedback_age_us = 10001; }
+        if (change == 2) { altered.target_rad += 0.001f; }
+        if (change == 3) { altered.gravity_ff_nm = 2.0f; }
+        if (change == 4) { faulted.trip(PitchIdentificationFault::cancelled); }
+        if (change == 6) { altered.isolated = false; }
+        static_cast<void>(faulted.tick(altered, {change == 5 ? 9000u : 3000u}));
+        CHECK(faulted.latched()); CHECK(faulted.position_offset_rad() == 0);
+    }
+}
 void boundaries_and_wrap() {
     PitchIdentification test;
     auto r = recipe();
@@ -202,6 +256,33 @@ struct Rig {
         plant.integrate(config,bus1,bus2,.001f);
     }
 };
+void position_final_submission() {
+    auto config = fixture();
+    config.pitch_identification->max_position_amplitude_rad = .01f;
+    config.pitch_identification->max_position_speed_rad_s = .1f;
+    auto r = recipe(); r.amplitude_nm = 0; r.position_amplitude_rad = .005f;
+    r.position_speed_rad_s = .1f; r.half_period_us = 100000; r.final_hold_us = 60000;
+    for (const bool refuse : {false, true}) {
+        Rig rig(config);
+        const auto end = rig.now.ms + static_cast<std::uint32_t>(r.duration_us()/1000);
+        CHECK(rig.exec.start_pitch_identification(r, rig.now, rig.app));
+        for (auto ms = rig.now.ms+1; ms <= end; ++ms) {
+            rig.target();
+            if (ms == end) { rig.bus2.refuse = refuse; }
+            rig.step(ms);
+        }
+        const auto& ident = rig.exec.pitch_identification();
+        if (refuse) {
+            CHECK(ident.latched() && ident.fault() == PitchIdentificationFault::transmit);
+        } else {
+            CHECK(ident.state() == PitchIdentificationState::complete);
+            const auto frame = rig.bus2.last_with_id(*rig.config.dm[0].can_id);
+            CHECK(frame);
+            const auto mit = ec::sentinel::host::decode_dm_mit_command(*frame, *rig.config.dm[0].limits);
+            CHECK(mit && std::fabs(mit->position_rad-.1f) < .001f);
+        }
+    }
+}
 void execution_chain() {
     Rig disabled(false);
     CHECK(!disabled.exec.pitch_identification_available());
@@ -608,8 +689,11 @@ void raw_fixture() {
     for (std::uint32_t ms=5;ms<=105;++ms) { rig.target(); rig.step(ms); }
     CHECK(rig.exec.pitch_identification().state()==PitchIdentificationState::complete);
     CHECK(rig.exec.stats().dm_disable_sent==0);
-    std::printf("{\"source\":\"APP_MIT_SIMULATION_ONLY\",\"hardware_ready\":false,\"layout_id\":%u,\"run\":%u,\"start_us\":%u,\"excitation_run_id\":1,\"control_domain\":6,\"window_requested_us\":%u}\n",
-        raw::layout_id,run,start_us,duration_us);
+    std::printf("{\"source\":\"APP_MIT_SIMULATION_ONLY\",\"hardware_ready\":false,\"layout_id\":%u,\"run\":%u,\"start_us\":%u,\"excitation_run_id\":1,\"control_domain\":6,\"window_requested_us\":%u,\"parameters\":[{\"id\":2308,\"value\":%.9g},{\"id\":2309,\"value\":%.9g},{\"id\":2310,\"value\":%.9g},{\"id\":2307,\"value\":%u}]}\n",
+        raw::layout_id,run,start_us,duration_us,
+        static_cast<double>(rig.config.dm[0].limits->position_max_rad),
+        static_cast<double>(rig.config.dm[0].limits->velocity_max_rad_s),
+        static_cast<double>(rig.config.dm[0].limits->torque_max_nm), rig.config.dm[0].feedback_ttl.ms);
     request[1]=3;
     std::uint32_t index=0;
     do {
@@ -631,7 +715,7 @@ void raw_fixture() {
 }
 int main(int argc,char** argv) {
     if (argc==2 && std::string_view{argv[1]}=="--raw-pitch-fixture") { raw_fixture(); return 0; }
-    waveform(); boundaries_and_wrap(); fault_latch(); execution_chain();
+    position_waveform(); position_final_submission(); waveform(); boundaries_and_wrap(); fault_latch(); execution_chain();
     capture_start_gate(); capture_streaming(); capture_overflow_and_latch();
     capture_stop_and_replace(); capture_reset_and_new_run();
     deployment_opt_in_availability(); deployment_capture_start();

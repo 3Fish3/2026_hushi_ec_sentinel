@@ -18,7 +18,20 @@ from board_monitor import Decoder, encode_frame
 MAGIC = b'ECRAW1\r\n'
 VERSION, LAYOUT, SIZE = 1, 0x52415701, 64
 KINDS = {1: 'gyro', 2: 'accel', 3: 'temperature', 4: 'can', 5: 'control'}
-PROFILES = {'stationary': 1, 'rotation': 2, 'control': 3}
+PROFILES = {'stationary': 1, 'rotation': 2, 'control': 3, 'autotune': 4}
+RESERVED_TRACE_KINDS = {6: 'autotune_sample', 7: 'autotune_control'}
+_TRACE_DECODERS = {}
+
+
+def register_trace_decoder(kind, decoder):
+    """Register the frozen Profile4 payload decoder; legacy kinds stay unchanged."""
+    if kind not in RESERVED_TRACE_KINDS or not callable(decoder):
+        raise ValueError('unsupported trace kind or decoder')
+    _TRACE_DECODERS[kind] = decoder
+
+
+def clear_trace_decoders():
+    _TRACE_DECODERS.clear()
 
 
 def delta(value, origin):
@@ -30,13 +43,22 @@ def decode_record(raw):
     if len(raw) != SIZE:
         raise ValueError('原始记录截断')
     version, kind, stream, flags, seq, source, sampled, arrived, lost, error, run = struct.unpack_from('<4B7I', raw)
-    if version != VERSION or kind not in KINDS or flags & ~7:
+    if version != VERSION or kind not in (*KINDS, *RESERVED_TRACE_KINDS) or flags & ~7:
         raise ValueError('原始记录版本/类型/标志不匹配')
     row: dict[str, Any] = {
-        'kind': KINDS[kind], 'stream': stream, 'flags': flags, 'sequence': seq,
+        'kind': KINDS.get(kind, RESERVED_TRACE_KINDS.get(kind)), 'stream': stream, 'flags': flags, 'sequence': seq,
         'source_sequence': source, 'sampled_us': sampled, 'arrived_us': arrived,
         'lost': lost, 'error_us': None if error == 0xffffffff else error, 'run': run,
     }
+    if kind in RESERVED_TRACE_KINDS:
+        if stream not in (5, 6):
+            raise ValueError('Profile4 axis must be fire_yaw (5) or pitch (6)')
+        if kind not in _TRACE_DECODERS:
+            # Lazy import avoids cycles and enables standalone raw export/replay.
+            from autotune_dataset import install_trace_decoders
+            install_trace_decoders()
+        row.update(_TRACE_DECODERS[kind](raw))
+        return row
     if kind == 4:
         info = struct.unpack_from('<I', raw, 32)[0]
         row.update(bus=info & 255, dlc=(info >> 8) & 255, can_id=info >> 16, data=raw[36:44].hex())
@@ -115,6 +137,8 @@ def load(path):
         row['t_s'] = delta(row['sampled_us'], metadata['start_us']) * 1e-6
         row['arrival_s'] = delta(row['arrived_us'], metadata['start_us']) * 1e-6
         previous = row['sequence']
+    from sentinel_pitch_feedback import annotate_feedback
+    annotate_feedback(metadata, rows)
     return metadata, rows
 
 
@@ -194,7 +218,14 @@ def export_csv(input_path, output_path):
                   'data', 'values', 'requested_frame', 'adopted_frame', 'state_bits', 'send_result',
                   'pitch_requested_rad', 'pitch_adopted_rad', 'pitch_measured_rad',
                   'pitch_measured_velocity_rad_s', 'pitch_feedforward_torque_nm', 'pitch_dt_s',
-                  'excitation_active', 'latched']
+                  'excitation_active', 'latched', 'pitch_reported_torque_nm',
+                  'pitch_mos_temperature_c', 'pitch_rotor_temperature_c',
+                  'pitch_native_position_rad', 'pitch_feedback_velocity_rad_s',
+                  'pitch_feedback_received_us', 'pitch_feedback_source_sequence',
+                  'pitch_feedback_age_us', 'pitch_feedback_status', 'pitch_dm_state', 'pitch_feedback_valid']
+        # Preserve legacy CSV columns; append frozen Profile4 fields only when present.
+        trace_keys = {key for row in rows if row['kind'] in RESERVED_TRACE_KINDS.values() for key in row}
+        fields += sorted(trace_keys - set(fields))
         writer = csv.DictWriter(file, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(rows)

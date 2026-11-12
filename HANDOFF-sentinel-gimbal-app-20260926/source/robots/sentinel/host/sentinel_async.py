@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import sentinel_client as wire
+from sentinel_raw_async import RawRequestLane
 
 # 单 UART 连续流解码器由 pitch stream 模块拥有; 这里只做分发, 不复制布局解析.
 # 缺失属于部署依赖, 由显式采集故障暴露, 不影响既有 v3 路径加载.
@@ -108,6 +109,7 @@ class _Request:
     future: Future | None
     session: int
     mutation: bool = False
+    dispatch_not_after: float | None = None
 
 
 @dataclass
@@ -165,8 +167,10 @@ class AsyncSentinelClient:
         self._reads = deque()
         self._read_active = False
         self._pending = OrderedDict()
+        self._raw_lane = RawRequestLane()
         self._goal = self._permit = None
         self._source = None
+        self._experiment_owned = False
         self._source_generation = 0
         # 连续流身份在首个字节之前绑定, 数据可能先于 start ACK 到达.
         self._pitch_decoder = _default_pitch_decoder() if pitch_decoder is None else pitch_decoder
@@ -196,6 +200,27 @@ class AsyncSentinelClient:
         self._thread = threading.Thread(target=self._run, daemon=True, name='sentinel-uart')
         self._thread.start()
 
+    def raw_request(self, payload, *, expected_session=None):
+        """Finite raw request on this SAME UART; no reader or transport is created."""
+        with self._lock:
+            if not self._connected or self._stop.is_set():
+                raise wire.ProtocolError('raw request requires active session')
+            session = self._session
+            if expected_session is not None and expected_session != session:
+                raise wire.ProtocolError("raw request belongs to replaced session")
+        future = self._raw_lane.post(payload, session)
+        self._wake.set()
+        return future
+
+    def _allocate_frame(self, *, raw=False):
+        # UART-owner only. Raw lane calls while holding its own lock.
+        for _ in range(65536):
+            self._frame = (self._frame + 1) & 0xffff
+            if (self._frame not in self._pending and self._frame not in self._pitch_pending
+                    and (raw or not self._raw_lane.frame_pending(self._frame))):
+                return self._frame
+        raise wire.ProtocolError('frame namespace exhausted')
+
     def snapshot(self):
         with self._lock:
             result = deepcopy(self._state)
@@ -207,14 +232,14 @@ class AsyncSentinelClient:
             result.update(log_dropped=self._log.dropped, log_error=self._log.error)
         return result
 
-    def _post(self, operation, values, mutation=False):
+    def _post(self, operation, values, mutation=False, *, dispatch_not_after=None):
         future = Future()
         with self._lock:
             if self._stop.is_set():
                 raise wire.ProtocolError('link owner closed')
             if operation != wire.HELLO and not self._connected:
                 raise wire.ProtocolError('hello required')
-            request = _Request(operation, values, future, self._session, mutation)
+            request = _Request(operation, values, future, self._session, mutation, dispatch_not_after)
             if mutation or operation == wire.HELLO:
                 if self._change_active:
                     raise wire.ProtocolError('one change is already pending')
@@ -251,12 +276,73 @@ class AsyncSentinelClient:
     def status(self, page=0):
         return self._post(wire.STATUS, {'page': page})
 
+    def experiment(self, command, *, hardware_blocked=True, dispatch_not_after=None):
+        """One correlated business request; default-deny motion, never acquire authority."""
+        command = bytes(command)
+        wire.encode_experiment(1, 1, command)  # validate before enqueue
+        if hardware_blocked and command[1] in (3, 4, 5, 8, 9):
+            raise wire.ProtocolError('experiment hardware_blocked')
+        motion = command[1] in (3, 4, 5, 8, 9)
+        if motion:
+            with self._lock:
+                self._experiment_owned = True
+                self._goal = self._source = self._permit = None
+                self._source_generation += 1
+        try:
+            return self._post(wire.EXPERIMENT, {'command': command}, command[1] not in (1, 2, 7),
+                dispatch_not_after=dispatch_not_after)
+        except Exception:
+            # Enqueue failed: nothing was dispatched, so the latch must not
+            # stick (it previously blocked all target publishing until a
+            # re-hello, with no hint why). Cleared goal/source stay cleared:
+            # losing them is fail-closed and harmless. If _post succeeded,
+            # the latch stays even if dispatch later fails (unknown outcome).
+            if motion:
+                with self._lock:
+                    self._experiment_owned = False
+            raise
+
+    def experiment_prepare(self, command, *, hardware_blocked=True):
+        if len(command) < 2 or command[1] != 3:
+            raise ValueError('PREPARE body required')
+        return self.experiment(command, hardware_blocked=hardware_blocked)
+
+    def _experiment_op(self, op, axis, pattern, experiment_session, nonce, extra=b'', *, hardware_blocked=True, dispatch_not_after=None):
+        command = struct.pack('<4BII', 3, op, axis, pattern, experiment_session, nonce) + extra
+        return self.experiment(command, hardware_blocked=hardware_blocked, dispatch_not_after=dispatch_not_after)
+
+    def experiment_status(self, axis, pattern, experiment_session=0, nonce=0):
+        return self._experiment_op(2, axis, pattern, experiment_session, nonce)
+
+    def experiment_arm(self, axis, pattern, experiment_session, nonce, *, hardware_blocked=True):
+        return self._experiment_op(4, axis, pattern, experiment_session, nonce, hardware_blocked=hardware_blocked)
+
+    def experiment_position(self, axis, pattern, experiment_session, nonce, policy, *, hardware_blocked=True):
+        from sentinel_experiment_positioning import encode_position_policy
+        return self._experiment_op(8, axis, pattern, experiment_session, nonce,
+            encode_position_policy(policy), hardware_blocked=hardware_blocked)
+
+    def experiment_confirm(self, axis, pattern, experiment_session, nonce, token, *, hardware_blocked=True):
+        return self._experiment_op(9, axis, pattern, experiment_session, nonce,
+            struct.pack('<I', token), hardware_blocked=hardware_blocked)
+
+    def experiment_start(self, axis, pattern, experiment_session, nonce, *, hardware_blocked=True, dispatch_not_after=None):
+        return self._experiment_op(5, axis, pattern, experiment_session, nonce, hardware_blocked=hardware_blocked,
+            dispatch_not_after=dispatch_not_after)
+
+    def experiment_cancel(self, axis, pattern, experiment_session, nonce):
+        return self._experiment_op(10, axis, pattern, experiment_session, nonce)
+
+    def experiment_stop(self, axis, pattern, experiment_session, nonce):
+        return self._experiment_op(6, axis, pattern, experiment_session, nonce)
+
     def diagnostics(self, page=0):
         return self._post(wire.DIAGNOSTICS, {'page': page})
 
     def pitch_identification(self, op, *, run_id=0, amplitude_nm=0.0, half_period_us=0,
                              baseline_us=0, cycles=0, final_hold_us=0,
-                             config_epoch=None, reference_epoch=None, domain=None):
+                             config_epoch=None, reference_epoch=None, domain=None,
+                             position_amplitude_rad=0.0, position_speed_rad_s=0.0):
         """复用既有 v3 编解码; query 是只读请求, start/cancel/reset 是变更.
 
         不发送任意电流、不写增益、不改 TTL; 代次缺省取当前会话快照.
@@ -269,9 +355,13 @@ class AsyncSentinelClient:
                   'reference_epoch': snap['reference_epoch'] if reference_epoch is None else reference_epoch,
                   'run_id': run_id, 'amplitude_nm': amplitude_nm, 'half_period_us': half_period_us,
                   'baseline_us': baseline_us, 'cycles': cycles, 'final_hold_us': final_hold_us}
+        if op_code == 4:
+            values.update(position_amplitude_rad=position_amplitude_rad, position_speed_rad_s=position_speed_rad_s)
         if domain is not None:
             values['domain'] = int(domain)
-        return self._post(wire.PITCH_IDENTIFICATION, values, op_code != 0)
+        if op_code not in (0, 5) and self._experiment_owned:
+            raise wire.ProtocolError('experiment owns reference; identification mutation blocked')
+        return self._post(wire.PITCH_IDENTIFICATION, values, op_code not in (0, 5))
 
     # ------------------------------------------------------------------
     # 单 UART 连续流: 原始 0x32 请求 + 0xB2 应答 + 0xB3 非请求数据.
@@ -375,9 +465,7 @@ class AsyncSentinelClient:
         domain = PITCH_STREAM_DOMAIN if request.op == PITCH_STREAM_OPS['start'] else 0
         try:
             payload = struct.pack('<4B2I', 1, request.op, profile, domain, request.run, request.duration_us)
-            self._frame = (self._frame+1) & 0xffff
-            while self._frame in self._pending or self._frame in self._pitch_pending:
-                self._frame = (self._frame+1) & 0xffff
+            self._allocate_frame()
             message = wire.encode_frame(PITCH_STREAM, self._frame, payload)
         except (wire.ProtocolError, ValueError, TypeError, OverflowError, struct.error) as error:
             self._settle_stream_future(request, error=error)
@@ -542,6 +630,8 @@ class AsyncSentinelClient:
         with self._lock:
             if not self._connected:
                 raise wire.ProtocolError('hello required')
+            if self._experiment_owned:
+                raise wire.ProtocolError('experiment owns reference; explicit new handshake required')
             self._source_generation += 1
             self._source = None
             if self._goal is not None:
@@ -554,6 +644,8 @@ class AsyncSentinelClient:
         with self._lock:
             if not self._connected:
                 raise wire.ProtocolError('hello required')
+            if self._experiment_owned:
+                raise wire.ProtocolError('experiment owns reference; permit mutation blocked')
             self._permit = (self._session, time.monotonic(), bool(allow), int(ttl_ms))
         self._wake.set()
 
@@ -566,6 +658,8 @@ class AsyncSentinelClient:
         with self._lock:
             if not self._connected:
                 raise wire.ProtocolError('hello required')
+            if self._experiment_owned:
+                raise wire.ProtocolError('experiment owns reference; explicit new handshake required')
             self._source_generation += 1
             self._source = source
             self._goal = None if source else self._goal_at({}, time.monotonic())
@@ -578,7 +672,8 @@ class AsyncSentinelClient:
                    wire.PARAM_WRITE: wire.encode_param_write, wire.STATUS: wire.encode_status,
                    wire.DIAGNOSTICS: wire.encode_diagnostics, wire.TARGETS: wire.encode_targets,
                    wire.PERMIT: wire.encode_permit,
-                   wire.PITCH_IDENTIFICATION: wire.encode_pitch_identification}[op]
+                   wire.PITCH_IDENTIFICATION: wire.encode_pitch_identification,
+                    wire.EXPERIMENT: wire.encode_experiment}[op]
         return encoder(**values) if op == wire.HELLO else encoder(request.session, sequence, **values)
 
     def _begin(self, request, now):
@@ -587,6 +682,10 @@ class AsyncSentinelClient:
             self._clear_lane(request)
             return
         try:
+            if request.dispatch_not_after is not None and time.monotonic() >= request.dispatch_not_after:
+                raise wire.ProtocolError("finite capture START dispatch deadline expired")
+            if request.operation == wire.TARGETS and self._experiment_owned:
+                raise wire.ProtocolError('experiment owns reference')
             if request.operation == wire.HELLO:
                 self._reset_session()
                 sequence = 0
@@ -596,9 +695,7 @@ class AsyncSentinelClient:
                 self._sequence += 1
                 sequence = self._sequence
             payload = self._make_payload(request, sequence)
-            self._frame = (self._frame+1) & 0xffff
-            while self._frame in self._pending:
-                self._frame = (self._frame+1) & 0xffff
+            self._allocate_frame()
             message = wire.encode_frame(request.operation, self._frame, payload)
         except (wire.ProtocolError, ValueError, TypeError, OverflowError, struct.error) as error:
             self._clear_lane(request)
@@ -630,6 +727,7 @@ class AsyncSentinelClient:
                 self._read_active = False
 
     def _reset_session(self):
+        self._raw_lane.fail(wire.ProtocolError('raw session replaced; stop NOT confirmed'))
         # 新握手会在 MCU 替换会话; 旧读请求/连续目标不迁移到新身份.
         for pending in tuple(self._pending.values()):
             self._finish(pending, error=wire.ProtocolError('session replaced'))
@@ -639,6 +737,8 @@ class AsyncSentinelClient:
             self._goal = self._permit = self._source = None
             self._source_generation += 1
             self._connected = False
+            self._experiment_owned = False
+            self._state['experiment'] = None
             self._state['connected'] = False
             # 采集身份属于旧会话: 连同未发出的请求一起作废, 旧 run 的迟到应答不得续采.
             pitch_requests = list(self._pitch_requests)
@@ -691,6 +791,15 @@ class AsyncSentinelClient:
                     raise wire.ProtocolError('hello nonce mismatch')
             elif decoded.get('session') != request.session or decoded.get('sequence') != pending.sequence:
                 raise wire.ProtocolError('response identity mismatch')
+            if request.operation == wire.EXPERIMENT and rtype == wire.EXPERIMENT_SNAPSHOT:
+                command = request.values['command']
+                if decoded.get('op') != command[1]:
+                    raise wire.ProtocolError('experiment response operation mismatch')
+                sid, nonce = struct.unpack_from('<II', command, 4)
+                if sid and (decoded.get('experiment_session'), decoded.get('nonce')) != (sid, nonce):
+                    raise wire.ProtocolError('experiment response session/nonce mismatch')
+                if sid and decoded.get('axis') != {5: 'fire_yaw', 6: 'pitch'}[command[2]]:
+                    raise wire.ProtocolError('experiment response axis mismatch')
         except wire.ProtocolError as error:
             self._stats['invalid_replies'] += 1
             with self._lock:
@@ -722,6 +831,8 @@ class AsyncSentinelClient:
                     self._state['status'][decoded['page']] = deepcopy(decoded)
                 elif request.operation == wire.DIAGNOSTICS and 'page' in decoded:
                     self._state['diagnostics'][decoded['page']] = deepcopy(decoded)
+                elif request.operation == wire.EXPERIMENT:
+                    self._state['experiment'] = deepcopy(decoded)
                 elif request.operation == wire.TARGETS:
                     self._state['last_target_ack'] = dict(decoded)
             if request.mutation:
@@ -742,7 +853,7 @@ class AsyncSentinelClient:
             if now < pending.deadline:
                 continue
             request = pending.request
-            if request.mutation and self._connected and request.session == self._session and pending.attempts < self.attempts:
+            if request.mutation and self._connected and request.session == self._session and pending.attempts < self.attempts and (request.dispatch_not_after is None or now < request.dispatch_not_after):
                 # 整个线帧原样重传: 不分配业务新序号, 不重新执行参考变更, 不给旧目标续期.
                 self.transport.send(pending.message)
                 pending.attempts += 1
@@ -795,6 +906,8 @@ class AsyncSentinelClient:
                     if reply is None:
                         break
                     # 原始连续流有自己的身份(帧回显/op/run), 不参与 v3 业务应答校验.
+                    if self._raw_lane.receive(reply, self._session if self._connected else 0):
+                        continue
                     if reply[0] == PITCH_STREAM_DATA:
                         self._pitch_data(reply[2])
                     elif reply[0] == PITCH_STREAM_ACK:
@@ -803,6 +916,8 @@ class AsyncSentinelClient:
                         self._receive(reply)
                 self._expire(now)
                 self._expire_stream(now)
+                self._raw_lane.tick(now, self._session if self._connected else 0,
+                    lambda: self._allocate_frame(raw=True), self.transport.send)
                 with self._lock:
                     change, self._change = self._change, None
                 if change:
@@ -845,6 +960,7 @@ class AsyncSentinelClient:
                 self._state['error'] = str(caught)
         finally:
             self._stop.set()
+            self._raw_lane.close()
             for pending in tuple(self._pending.values()):
                 request = pending.request
                 failure = OutcomeUnknown(request.operation, request.session, pending.sequence,

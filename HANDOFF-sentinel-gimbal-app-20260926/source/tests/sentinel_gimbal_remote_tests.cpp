@@ -1,6 +1,8 @@
 // 同固件调参/遥控切换: 实际执行目标、MIT 帧及在线 kp/kd 必须沿用同一运行对象.
 #include "board_app_config.hpp"
 #include "sentinel_cycle.hpp"
+#include "sentinel_experiment_bridge.hpp"
+#include "sentinel_protocol.hpp"
 #include "sentinel_param_apply.hpp"
 #include "sim_plant.hpp"
 #include "raw_record.hpp"
@@ -69,12 +71,65 @@ struct Rig {
     void warmup() { for (int i = 0; i < 8; ++i) { tick(); } }
 };
 
+void experiment_defaults_and_simulation_isolation() {
+    namespace ex = app::excitation;
+    Rig r;
+    app::SentinelHostSession session{r.application, r.params, &r.executor, &r.perception};
+    auto& disabled = session.experiment_controller();
+    CHECK(!disabled.simulation() && !disabled.hardware_capable());
+    CHECK(disabled.state() == ex::State::disabled);
+    CHECK(disabled.reason() == ex::Reason::hardware_blocked);
+    const ex::TrustedDeploymentSafetyConfig deployment{};
+    const ex::TrustedDeploymentRoot root{};
+    app::SentinelHostSession empty{r.application, r.params, &r.executor, &r.perception,
+        {}, 0, &deployment, &root};
+    CHECK(empty.experiment_controller().state() == ex::State::disabled);
+    const auto missing = app::deployment_experiment_guards(r.application, r.executor,
+        disabled, Domain::fire_yaw, r.now);
+    CHECK(!missing.guardian_approved && !missing.guardian_clear);
+    CHECK(!missing.feedback_fresh && !missing.limits_valid);
+    CHECK(!missing.stop_strategy_verified && !missing.pitch_fall_arrest_verified);
+    CHECK(!missing.output_observation_valid && std::isnan(missing.observed_output));
+    CHECK(!disabled.prepare({}, missing, r.now.ms * 1000u));
+
+    // Explicit offline simulation can run, but binding it must not submit MCU targets.
+    r.warmup();
+    ex::Controller simulation{true};
+    ex::Config c{};
+    c.session_id=1; c.nonce=2; c.param_epoch=3; c.guardian_version=4;
+    c.config_hash=5; c.safety_reference_id=6;
+    c.center_rad=0.1f; c.amplitude_rad=0.01f; c.min_rad=-0.2f; c.max_rad=0.2f;
+    c.max_velocity_rad_s=1; c.max_acceleration_rad_s2=100;
+    c.max_travel_rad=1; c.max_output_abs=1; c.max_output_integral=1;
+    c.move_us=40000; c.duration_us=100000; c.heartbeat_timeout_us=100000;
+    c.stop_timeout_us=100000; c.repeats=1;
+    ex::Guards g{};
+    g.maintenance_authorized=g.operator_approved=g.remote_online=true;
+    g.guardian_approved=g.guardian_clear=g.feedback_fresh=g.reference_valid=g.limits_valid=true;
+    g.actuator_healthy=g.other_axes_idle=g.stop_strategy_verified=true;
+    g.timing_valid=g.link_alive=g.backpressure_ok=g.output_observation_valid=true;
+    g.param_epoch=c.param_epoch; g.guardian_version=c.guardian_version;
+    g.config_hash=c.config_hash; g.safety_reference_id=c.safety_reference_id;
+    g.actual_position_rad=c.center_rad;
+    const auto now=r.now.ms * 1000u;
+    CHECK(simulation.prepare(c,g,now)); CHECK(simulation.arm(g,now));
+    CHECK(simulation.start(g,now));
+    CHECK(simulation.tick(g,now).has_value());
+    const auto accepted=r.application.accepted_packets();
+    const auto invalidated=r.application.target_invalidations();
+    r.cycle.bind_experiment(simulation);
+    r.tick();
+    CHECK(r.application.accepted_packets()==accepted);
+    CHECK(r.application.target_invalidations()==invalidated);
+    CHECK(!r.executor.experiment_active());
+}
+
 void commissioned_fire_yaw_defaults_survive_boot() {
     // 调参使用PARAM_WRITE原生值; 冷启动的协议读回与实际内环必须保持相同口径.
     // 曾把0.09/2.00再次除以2.5A, 导致烧录后退化为0.036/0.80.
     Rig boot;
     for (const auto& [id, expected, gain] : {
-            std::tuple{0x501, 0.09f, 0}, std::tuple{0x502, 2.0f, 1}}) {
+            std::tuple{0x501, 0.16f, 0}, std::tuple{0x502, 3.0f, 1}}) {
         const auto* entry = boot.params.entry(id);
         CHECK(entry && !entry->overridden);
         CHECK(std::fabs(entry->value - expected) < 1e-6f);
@@ -162,4 +217,4 @@ void gain_and_target_continuity() {
 }
 }
 
-int main() { commissioned_fire_yaw_defaults_survive_boot(); gain_and_target_continuity(); }
+int main() { experiment_defaults_and_simulation_isolation(); commissioned_fire_yaw_defaults_survive_boot(); gain_and_target_continuity(); }

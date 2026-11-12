@@ -89,6 +89,19 @@ ParamStore::ParamStore(const SentinelConfig& config) noexcept {
         add(slot, ParamKind::reference, config.dm[0].domain, false, 3,
             static_cast<float>(config.dm[0].feedback_ttl.ms), 1.0f, 1000.0f, "feedback_ttl_ms",
             "ms");
+        // MIT 解码量程只读公开；无在线生效路径，写入仍返回 unsupported。
+        if (config.dm[0].limits) {
+            const auto& limits = *config.dm[0].limits;
+            add(slot, ParamKind::reference, config.dm[0].domain, false, 4,
+                limits.position_max_rad, limits.position_max_rad, limits.position_max_rad,
+                "position_max_rad", "rad");
+            add(slot, ParamKind::reference, config.dm[0].domain, false, 5,
+                limits.velocity_max_rad_s, limits.velocity_max_rad_s, limits.velocity_max_rad_s,
+                "velocity_max_rad_s", "rad/s");
+            add(slot, ParamKind::reference, config.dm[0].domain, false, 6,
+                limits.torque_max_nm, limits.torque_max_nm, limits.torque_max_nm,
+                "torque_max_nm", "N*m");
+        }
         for (std::size_t i = 0; i < joint_slot_count; ++i) {
             if (config.joints[i].domain != config.dm[0].domain) { continue; }
             const auto& joint = config.joints[i];

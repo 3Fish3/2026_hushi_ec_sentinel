@@ -11,6 +11,8 @@ from sentinel_async import AsyncSentinelClient, OutcomeUnknown
 from sentinel_test import PARTS as BASE_PARTS
 from sentinel_test import accepted
 from sentinel_pitch_tuning import PitchTuningController
+from sentinel_experiment_positioning import ExperimentPositioningController
+from sentinel_positioning_capture import PositioningCaptureOwner
 
 PARTS = {**BASE_PARTS, 'bench': ('main_yaw', 'pitch', 'friction_left', 'trigger')}
 
@@ -166,8 +168,12 @@ class MaintenanceSession:
         self.last_request = None
         self.note = ''
         self.assistance = PitchTuningController(peer)
+        self.positioning_capture = PositioningCaptureOwner(peer)
+        self.positioning = ExperimentPositioningController(peer, capture_start=self.positioning_capture.start)
 
     def require_manual(self):
+        if self.positioning.active:
+            raise ValueError('Experiment owns reference; STOP and reconnect before manual/assist control')
         if self.assistance.active:
             raise ValueError('辅助调参占用目标控制, 请先停止后再人工修改')
 
@@ -233,6 +239,10 @@ class MaintenanceSession:
         self.peer.set_target_source(source)
 
     def stop(self):
+        if self.positioning.active:
+            result = self.positioning.stop()
+            self.note = 'Experiment STOP requested; backend stop stage is authoritative, NOT physical e-stop'
+            return result
         if self.assistance.active:
             self.assistance.stop()
         self.peer.set_target_source(None)
@@ -315,8 +325,14 @@ class MaintenanceSession:
 
     def close(self):
         try:
+            self.positioning.close()
+            self.positioning_capture.close()
             self.assistance.close()
             if self.requested_authority and self.peer.snapshot()['connected']:
-                self.release()
+                if self.positioning.active:
+                    accepted(self.peer.authorize(False, 'maintenance').result(timeout=2))
+                    self.requested_authority = False
+                else:
+                    self.release()
         finally:
             self.peer.close()

@@ -14,6 +14,7 @@
 #include "sentinel_execution.hpp"
 #include "sentinel_perception.hpp"
 #include "sentinel_remote.hpp"
+#include "sentinel_experiment.hpp"
 #include <array>
 #include <optional>
 
@@ -72,6 +73,9 @@ public:
     // 后半周期: 提交执行并积分命令预测.
     void commit(const CycleInputs& inputs) noexcept;
 
+    // 绑定 MCU 主动激励控制器 (方案B: 默认仿真控制器驱动状态机与记录, 硬件门由 deployment 兜底).
+    void bind_experiment(excitation::Controller& controller) noexcept { experiment_ = &controller; }
+
     [[nodiscard]] const RemoteMapper& mapper() const noexcept { return mapper_; }
     [[nodiscard]] const input::Dr16Input& remote_input() const noexcept { return remote_; }
     [[nodiscard]] const CycleOutcome& outcome() const noexcept { return outcome_; }
@@ -82,6 +86,8 @@ private:
     void refresh_feedback(Tick now) noexcept;
     // 遥控样本按到达时刻去重: 槽位被重复读取时不应重复计数或重复建立基准.
     bool accept_remote(const CycleInputs& inputs) noexcept;
+    // 激励实验每周期推进: 生成位置参考→经应用层目标接受→记录; 状态机推进与撤参考.
+    void experiment_step(const CycleInputs& inputs) noexcept;
 
     SentinelApp& app_;
     SentinelExecutor& executor_;
@@ -95,5 +101,6 @@ private:
     std::uint32_t local_epoch_{};
     // 各关节域的参考代次快照: 参改变后丢弃该域已保持的本地角度目标.
     std::array<std::uint32_t, joint_slot_count> reference_epochs_{};
+    excitation::Controller* experiment_{};
 };
 } // 命名空间 ec::sentinel::app

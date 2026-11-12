@@ -10,6 +10,9 @@ void ec_raw_can(std::uint8_t bus, const ec::transport::CanFrame& frame, ec::Micr
 void ec_raw_push(const ec::sentinel::recording::Record& record) noexcept;
 bool ec_raw_fast_dm() noexcept;
 int ec_raw_control_domain() noexcept;
+int ec_raw_autotune_axis() noexcept;
+void ec_raw_push_bundle(const ec::sentinel::recording::Record& state,
+    const ec::sentinel::recording::Record& aux) noexcept;
 std::size_t ec_raw_request(std::span<const std::uint8_t> in, std::span<std::uint8_t> out) noexcept;
 #if EC_SENTINEL_CAPTURE
 inline constexpr std::uint32_t capture_stream_baud = 1000000;

@@ -159,14 +159,18 @@ void gimbal_contracts() {
     CHECK(r.targets(Domain::fire_yaw,4.0f)==app::AcceptResult::limit_violation);
     CHECK(r.targets(Domain::fire_yaw,-1.3f)==app::AcceptResult::limit_violation);
     CHECK(r.targets(Domain::fire_yaw,0.9f)==app::AcceptResult::limit_violation);
-    CHECK(r.targets(Domain::fire_yaw,0.5f)==app::AcceptResult::accepted);   // 带内
-    CHECK(r.targets(Domain::fire_yaw,-1.0f)==app::AcceptResult::accepted);  // 带内
+    // 参数表终版操作带 [-0.93,+0.479], 不等同于机械止点.
+    CHECK(r.targets(Domain::fire_yaw,0.5f)==app::AcceptResult::limit_violation);
+    CHECK(r.targets(Domain::fire_yaw,-1.0f)==app::AcceptResult::limit_violation);
+    CHECK(r.targets(Domain::fire_yaw,0.478f)==app::AcceptResult::accepted);
+    CHECK(r.targets(Domain::fire_yaw,-0.929f)==app::AcceptResult::accepted);
     CHECK(r.targets(Domain::pitch,12.4f)==app::AcceptResult::limit_violation); // 同时越软限位与MIT映射范围
     CHECK(r.targets(Domain::pitch,-0.273f)==app::AcceptResult::limit_violation); // 越机械下界
     CHECK(r.targets(Domain::pitch,0.437f)==app::AcceptResult::limit_violation);  // 越机械上界
-    // 操作带[-0.132,+0.235]: 机械止点内的目标若越出操作带也必须拒绝.
-    CHECK(r.targets(Domain::pitch,-0.272f)==app::AcceptResult::limit_violation); // 机械内但低于操作带
-    CHECK(r.targets(Domain::pitch,0.435f)==app::AcceptResult::limit_violation);  // 机械内但高于操作带
+    // 操作带[-0.268,+0.235]: 机械止点[-0.272755,+0.436245]内的目标若越出操作带也必须拒绝.
+    CHECK(r.targets(Domain::pitch,-0.270f)==app::AcceptResult::limit_violation); // 机械内但低于操作带(-0.268)
+    CHECK(r.targets(Domain::pitch,0.435f)==app::AcceptResult::limit_violation);  // 机械内但高于操作带(+0.235)
+    CHECK(r.targets(Domain::pitch,-0.267f)==app::AcceptResult::accepted);        // 带内
     CHECK(r.targets(Domain::pitch,-0.131f)==app::AcceptResult::accepted);        // 带内
     CHECK(r.targets(Domain::pitch,0.234f)==app::AcceptResult::accepted);         // 带内
     CHECK(r.targets(Domain::pitch,0.1f)==app::AcceptResult::accepted);

@@ -1,4 +1,5 @@
 #include "sentinel_protocol.hpp"
+#include "sentinel_experiment_bridge.hpp"
 #include "sentinel_param_apply.hpp"
 #include "sentinel_telemetry.hpp"
 #include <array>
@@ -113,7 +114,8 @@ bool SentinelHostSession::non_idempotent_request(MessageType type) noexcept {
     case MessageType::align:
     case MessageType::param_write:
     case MessageType::permit:
-    case MessageType::pitch_identification: return true;
+    case MessageType::pitch_identification:
+    case MessageType::experiment: return true;
     default: return false;
     }
 }
@@ -567,11 +569,11 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
     const auto config_epoch = r.u32();
     const auto reference_epoch = r.u32();
 
-    if (op > 3) {
+    if (op > 5) {
         return ack(MessageType::ack, session, seq, ResultCode::invalid_value, 0, response);
     }
-    const bool is_start = (op == 1);
-    const std::size_t base_len = is_start ? 43 : 19;
+    const bool is_start = (op == 1 || op == 4);
+    const std::size_t base_len = op == 4 ? 51 : (is_start ? 43 : 19);
     // 可选末字节 domain: 缺省保持历史行为, 恒为 pitch(6). 允许扩展到 fire_yaw/main_yaw 电流辨识.
     const bool has_domain = (payload.size() == base_len + 1);
     if (!has_domain && payload.size() != base_len) {
@@ -588,6 +590,10 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         recipe.baseline_us = r.u32();
         recipe.cycles = r.u32();
         recipe.final_hold_us = r.u32();
+        if (op == 4) {
+            recipe.position_amplitude_rad = r.f32();
+            recipe.position_speed_rad_s = r.f32();
+        }
     }
     if (has_domain) { target_domain = r.u8(); }
     if (!r.exact()) {
@@ -607,7 +613,7 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
     dji_recipe.cycles = recipe.cycles;
     dji_recipe.final_hold_us = recipe.final_hold_us;
 
-    const bool non_idempotent = (op != 0);
+    const bool non_idempotent = (op != 0 && op != 5);
     const auto check = check_session(session, seq, non_idempotent, now);
     if (!check.proceed) {
         return ack(MessageType::ack, session, seq, check.code, 0, response);
@@ -621,8 +627,12 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         w.u32(seq);
         w.u8(static_cast<std::uint8_t>(result));
         w.u8(reason);
-        const bool avail = executor_ && (is_pitch ? executor_->pitch_identification_available()
+        bool avail = executor_ && (is_pitch ? executor_->pitch_identification_available()
             : (dji_slot && executor_->dji_identification_available(*dji_slot)));
+        if (op == 5) {
+            const auto& p = app_->config().pitch_identification;
+            avail = avail && is_pitch && p && p->max_position_amplitude_rad > 0 && p->max_position_speed_rad_s > 0;
+        }
         w.u8(avail ? 1 : 0);
         bool wrote = false;
         if (executor_ && is_pitch) {
@@ -648,7 +658,7 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         return w.overflow ? 0 : w.size();
     };
 
-    if (op == 0) { // query
+    if (op == 0 || op == 5) { // query / position capability query
         if (!known_domain) { return make_response(ResultCode::invalid_value); }
         accept_activity(now);
         return make_response(ResultCode::accepted);
@@ -675,7 +685,12 @@ std::size_t SentinelHostSession::handle_pitch_identification(std::span<std::uint
         return make_response(ResultCode::epoch_mismatch);
     }
 
-    if (op == 1) { // start
+    if (is_start) { // torque start / position start
+        if (op == 4 && (!is_pitch || recipe.amplitude_nm != 0 ||
+            !std::isfinite(recipe.position_amplitude_rad) || recipe.position_amplitude_rad <= 0 ||
+            !std::isfinite(recipe.position_speed_rad_s) || recipe.position_speed_rad_s <= 0)) {
+            return make_response(ResultCode::invalid_value);
+        }
         if (!std::isfinite(recipe.amplitude_nm)) {
             return make_response(ResultCode::invalid_value);
         }
@@ -885,7 +900,53 @@ std::size_t SentinelHostSession::handle_diagnostics(std::span<std::uint8_t> resp
 ParamWriteResult SentinelHostSession::write_param(std::uint16_t id, float value,
     bool idle) noexcept {
     if (params_ == nullptr) { return ParamWriteResult::not_configured; }
+    if (executor_ && executor_->experiment_active()) { return ParamWriteResult::reference_in_use; }
     return apply_param(*params_, *app_, executor_, perception_, id, value, idle);
+}
+
+std::size_t SentinelHostSession::handle_experiment(std::span<std::uint8_t> response,
+    std::span<const std::uint8_t> payload, Tick now) noexcept {
+    if (payload.size() < 22 || response.size() < 42) {
+        return ack(MessageType::ack, 0, 0, ResultCode::bad_length, 0, response);
+    }
+    PayloadReader r{payload};
+    static_cast<void>(r.u8());
+    static_cast<void>(r.u8());
+    const auto session = r.u32();
+    const auto seq = r.u32();
+    const auto checked = check_session(session, seq, true, now);
+    if (!checked.proceed) {
+        return ack(MessageType::ack, session, seq, checked.code, 0, response);
+    }
+    const auto domain = static_cast<Domain>(payload[12]);
+    excitation::Guards g{};
+    if (executor_ && (domain == Domain::fire_yaw || domain == Domain::pitch)) {
+        g = deployment_experiment_guards(*app_, *executor_, experiment_controller(), domain, now);
+    }
+    g.maintenance_authorized = g.maintenance_authorized && operator_approval_present();
+    g.operator_approved = g.operator_approved && g.maintenance_authorized;
+    g.link_alive = link_state(now).alive;
+    g.timing_valid = experiment_controller().cycle_evidence_fresh(now.ms);
+    const auto at = executor_ ? executor_->experiment_time(now) : MicroTick{now.ms * 1000u};
+    const auto n = experiment_.handle(payload.subspan(10), g, at.us, response.subspan(10));
+    if (n == 0) { return 0; }
+    PayloadWriter w{response.first(10)};
+    w.u8(protocol_version);
+    w.u8(static_cast<std::uint8_t>(MessageType::experiment_snapshot));
+    w.u32(session);
+    w.u32(seq);
+    accept_activity(now);
+    return 10 + n;
+}
+
+bool SentinelHostSession::operator_approval_present() const noexcept {
+    if (executor_ == nullptr) { return false; }
+    if (!requester_holds()) { return false; }
+    if (app_->authority().source() != Source::maintenance) { return false; }
+    if (!app_->authority().maintenance_holds()) { return false; }
+    if (!app_->authority().maintenance_commissioning_selected()) { return false; }
+    if (!app_->snapshot().input.remote_online) { return false; }
+    return true;
 }
 
 std::size_t SentinelHostSession::handle(std::span<const std::uint8_t> request, Tick now,
@@ -945,6 +1006,7 @@ std::size_t SentinelHostSession::handle(std::span<const std::uint8_t> request, T
     case MessageType::param_write: size = handle_param_write(response, request, now); break;
     case MessageType::permit: size = handle_permit(response, request, now); break;
     case MessageType::pitch_identification: size = handle_pitch_identification(response, request, now); break;
+    case MessageType::experiment: size = handle_experiment(response, request, now); break;
     case MessageType::status: size = handle_status(response, request, now); break;
     case MessageType::diagnostics: size = handle_diagnostics(response, request, now); break;
     default:

@@ -82,6 +82,8 @@ SentinelConfig host_config(ec::sentinel::host::Mechanism fixture, bool identific
     policy.max_feedback_age_us = 10000;
     policy.max_step_us = 6000;
     policy.require_capture = true;
+    policy.max_position_amplitude_rad = 0.01f;
+    policy.max_position_speed_rad_s = 0.1f;
     config.pitch_identification = policy;
     return config;
 }
@@ -121,8 +123,9 @@ struct Host {
           perception(config, ConfigAudience::offline_test), params(config),
           session(app, params, &exec, &perception, config.timing.host_link_ttl),
           cycle(app, exec, perception, RemoteMappingConfig{}, config.timing.remote_ttl) {
+        cycle.bind_experiment(session.experiment_controller());
+        exec.bind_pitch_recorder(&recorder);
         if (identification_enabled) {
-            exec.bind_pitch_recorder(&recorder);
             plant.dm.position_rad = 0.1f;
         }
         // 映射量程保持未标定 (全 0): 离线后端不生成任何本地操纵目标,
@@ -147,6 +150,7 @@ struct Host {
         }
         CycleInputs in{};
         in.now = now;
+        in.now_us = MicroTick{now.ms * 1000u}; // Explicit synthetic microsecond clock.
         in.dt_s = 0.001f;
         in.remote_sample = remote_sample;
         in.remote_received_at = now;
@@ -166,6 +170,12 @@ struct Host {
         bus1.clear();
         bus2.clear();
         cycle.commit(in);
+        recorder.advance(*in.now_us);
+        if (const auto axis = recorder.autotune_axis(); axis >= 0) {
+            if (const auto pair = exec.autotune_trace(static_cast<Domain>(axis), now, app)) {
+                recorder.push_bundle(pair->state, pair->aux, *in.now_us);
+            }
+        }
         if (identification_enabled) {
             recorder.advance({now.ms*1000u});
             if (const auto trace = exec.trace(Domain::pitch, now, app)) {

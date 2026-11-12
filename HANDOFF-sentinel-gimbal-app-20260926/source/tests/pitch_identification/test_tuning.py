@@ -89,6 +89,8 @@ class NativeTuningTests(unittest.TestCase):
         self.assertGreater(view['control_records'], 0)
         self.assertEqual(view['gaps'], 0)
         self.assertTrue(any(abs(x) > 0.01 for x in view['series']['pitch_feedforward_torque_nm']))
+        self.assertGreater(view['analysis']['feedback_matched_records'], 0)
+        self.assertTrue(any(x == x for x in view['series']['pitch_reported_torque_nm']))
         self.assertTrue(all(len(x) == len(view['times']) for x in view['series'].values()))
         first_run = view['metadata']['run']
         session.authorize()
@@ -134,7 +136,8 @@ class TuningWidgetTests(unittest.TestCase):
             console = Console()
             try:
                 for tag in ('parameters_tab', 'assist_tab', 'manual_submit', 'assist_prepare',
-                            'assist_capture', 'assist_stop', 'assist_path', 'assist_effort'):
+                            'assist_capture', 'assist_stop', 'assist_path', 'assist_effort',
+                            'assist_reported_torque', 'assist_mos_temperature', 'assist_rotor_temperature'):
                     self.assertTrue(dpg.does_item_exist(tag), tag)
                 self.assertEqual(dpg.get_value('assist_level'), '0')
                 self.assertTrue(dpg.get_value('assist_lift'))

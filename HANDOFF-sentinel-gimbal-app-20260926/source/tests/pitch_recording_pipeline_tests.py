@@ -73,11 +73,16 @@ class PipelineTests(unittest.TestCase):
                 if row['kind'] == 'can':
                     self.assertEqual((row['stream'], row['bus'], row['can_id']), (9, 2, 0x011))
                     self.assertEqual(row['dlc'], 8)
+                    self.assertTrue(math.isfinite(row['pitch_reported_torque_nm']))
+                    self.assertIsInstance(row['pitch_mos_temperature_c'], int)
                 else:
                     self.assertEqual((row['kind'], row['stream']), ('control', 6))
                     self.assertFalse(row['latched'])
                     self.assertGreater(row['pitch_dt_s'], 0)
                     self.assertTrue(math.isfinite(row['pitch_measured_rad']))
+                    self.assertEqual(row['pitch_feedback_status'], 'fresh')
+                    self.assertEqual(row['pitch_feedback_age_us'], 0)
+                    self.assertTrue(math.isfinite(row['pitch_reported_torque_nm']))
             with (destination / 'samples.csv').open(newline='') as file:
                 self.assertEqual(len(list(csv.DictReader(file))), summary['samples'])
             with self.assertRaises(FileExistsError):

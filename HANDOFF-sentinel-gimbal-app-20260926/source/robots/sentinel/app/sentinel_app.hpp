@@ -120,6 +120,8 @@ public:
     // 单域参考语义改变 (关节零位/机械范围/对齐): 只作废该域的目标与降级保持, 并上推该域
     // 参考代次与全局代次, 不顺手把其它域 (尤其底盘) 一起停掉.
     void invalidate_domain_reference(Domain domain) noexcept;
+    // 主动撤销单域目标 (激励停止/完成时由编排层调用), 与"接受一份缺域目标"同义.
+    void withdraw_target(Domain domain) noexcept { invalidate_domain(domain_index(domain)); }
     // 惯性坐标重建不改变机械维护目标的含义.
     void invalidate_inertial_reference() noexcept;
     // 本地目标装配: 失去方向测量时把仍有效的 G07 原意图显式放入整包, 不续期.

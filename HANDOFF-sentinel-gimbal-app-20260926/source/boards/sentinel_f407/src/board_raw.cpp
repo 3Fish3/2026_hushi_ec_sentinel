@@ -25,10 +25,18 @@ int ec_raw_control_domain() noexcept {
     recorder.advance({ec_board_micros()});
     return recorder.control_domain();
 }
+int ec_raw_autotune_axis() noexcept {
+    recorder.advance({ec_board_micros()});
+    return recorder.autotune_axis();
+}
+void ec_raw_push_bundle(const ec::sentinel::recording::Record& state,
+    const ec::sentinel::recording::Record& aux) noexcept {
+    recorder.push_bundle(state, aux, {ec_board_micros()});
+}
 std::size_t ec_raw_request(std::span<const std::uint8_t> in, std::span<std::uint8_t> out) noexcept {
     ec::ScopedCritical guard(lock);
 #if EC_SENTINEL_CAPTURE
-    if (in.size() == 12 && in[1] == 1 && in[2] == 3) {
+    if (in.size() == 12 && in[1] == 1 && (in[2] == 3 || in[2] == 4)) {
         // 只读角色没有执行轨迹; 明确拒绝而不回一个只有 IMU 的伪控制窗口.
         std::array<std::uint8_t, 12> invalid{};
         std::copy(in.begin(), in.end(), invalid.begin());
@@ -41,7 +49,7 @@ std::size_t ec_raw_request(std::span<const std::uint8_t> in, std::span<std::uint
 #if EC_SENTINEL_CAPTURE
 // 采集快任务同时拥有生产与串口服务, 不跨任务访问连续队列.
 std::size_t ec_stream_request(std::span<const std::uint8_t> in, std::span<std::uint8_t> out) noexcept {
-    if (in.size() == 12 && in[1] == 1 && in[2] == 3) {
+    if (in.size() == 12 && in[1] == 1 && (in[2] == 3 || in[2] == 4)) {
         // CAPTURE has no execution trace; do not advertise fake control acquisition.
         std::array<std::uint8_t, 12> invalid{};
         std::copy(in.begin(), in.end(), invalid.begin());

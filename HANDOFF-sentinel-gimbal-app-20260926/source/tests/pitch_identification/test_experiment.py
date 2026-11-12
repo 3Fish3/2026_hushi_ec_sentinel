@@ -596,11 +596,28 @@ class ExperimentTests(unittest.TestCase):
         report = self.run_case(peer, make_plan(post_hold_s=0.05))
         self.assertIsNone(report['error'], report)
         manifest = json.loads((self.base / 'run/manifest.json').read_text(encoding='utf-8'))
-        for key in ('sraw', 'csv', 'manifest', 'summary'):
+        for key in ('sraw', 'csv', 'manifest', 'summary', 'analysis'):
             self.assertTrue(manifest['files'][key], f'files.{key} 不得为空字符串')
             self.assertTrue(Path(manifest['files'][key]).is_file(), f'files.{key} 指向的文件必须存在')
         self.assertEqual(Path(manifest['files']['manifest']), self.base / 'run/manifest.json')
         self.assertEqual(Path(manifest['files']['summary']), self.base / 'run/summary.json')
+
+    def test_analysis_write_failure_marks_capture_incomplete(self):
+        peer = FakePeer()
+        target = self.base / 'run'
+
+        def opener(path):
+            (target / 'analysis.json').mkdir()
+            return path.open('xb')
+
+        report = self.run_case(peer, make_plan(post_hold_s=0.05), writer_opener=opener)
+        self.assertTrue(any('analysis.json' in error for error in report['cleanup_errors']))
+        summary = json.loads((target / 'summary.json').read_text(encoding='utf-8'))
+        manifest = json.loads((target / 'manifest.json').read_text(encoding='utf-8'))
+        self.assertFalse(summary['quality']['complete'])
+        self.assertIsNotNone(summary['error'])
+        self.assertEqual(manifest['files']['analysis'], '')
+        self.assertTrue((target / 'pitch.sraw').is_file())
 
     def test_manifest_write_failure_never_leaves_complete_summary(self):
         """manifest 写失败时, 已落盘的 summary 不得继续声称 complete=true."""

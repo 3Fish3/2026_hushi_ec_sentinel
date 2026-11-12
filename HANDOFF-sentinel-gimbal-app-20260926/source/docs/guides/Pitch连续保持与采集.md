@@ -21,12 +21,45 @@
 2. 检查水平目标、抬升速度/最长时长、到位误差、稳定速度和连续稳定时长。默认数值只是待确认草稿，不是实车额定值。
 3. “调整到水平并保持”先在当前位置启用，再由已有目标限速器向水平移动。抬升期间使用覆盖整条路径的包络，到位后收窄为采集用的小包络。只有实际角度、角速度与新鲜反馈持续满足阈值才进入等待采集状态。
 4. 点击“开始采集并叠加方波”，仍使用同一 UART 会话。MCU 在固定位置保持上叠加正负力矩方波，主机异步收取 CAN/Pitch control 原始记录。不勾选“采集前自动调整到水平”时，以当前姿态开始试验。
-5. 采集完成后，页面自动读回 `.sraw`，显示目标/角度、角速度、编码前馈力矩曲线，以及记录数、缺口、丢样和跟踪误差统计。`.sraw`、CSV、manifest 和 summary 保存于仓库 `build/identification/pitch/assisted-*/`。也可输入已有 `.sraw` 路径并点击“读取采集结果”。这一步不自动计算或写入可部署 `kp/kd`。
+5. 采集完成后，页面自动读回 `.sraw`，显示目标/角度、角速度、编码前馈力矩、电调上报力矩及 MOS/转子温度曲线，以及记录数、缺口、丢样、反馈对齐数和跟踪误差统计。`.sraw`、CSV、manifest、summary 和 `analysis.json` 保存于仓库 `build/identification/pitch/assisted-*/`。也可输入已有 `.sraw` 路径并点击“读取采集结果”。这一步不自动计算或写入可部署 `kp/kd`。
 6. 辅助流程运行时，人工目标/增益/零位写入暂时锁定；完成或停止后恢复。勾选“采集完成后保持目标，等待拨杆切入遥控验证”时，方波完成后先排空采集，再继续用原目标与当前 `kp/kd` 保持。页面提示等待切遥控后再拨档；确认遥控已执行 Pitch 后，上位机撤掉自己的目标源并结束维护请求。未勾选时沿用有界后置保持再撤权；两种等待均有时限，超时会释放保持力矩。
 
 “Pitch辨识仿真”连接选项使用原生软件后端的辨识夹具，可练习整个按钮流程。真实固件必须启用辨识并提供策略，才能开始方波；普通 APP 可以先调整到水平并保持，但采集请求会被明确拒绝。抬不动、超时、反馈过期或停止时不会继续自动进入方波。
 
 独立命令行 `sentinel_pitch_experiment.py` 也可通过 `--lift-to-rad 0` 启用抬升，并必须同时填写 `--lift-speed`、`--lift-timeout`、`--settle-seconds`、`--settle-error`、`--settle-speed`。未提供抬升参数时沿用原来的启动姿态试验方式。
+
+### Pitch 力矩反馈与离线分析
+
+### MCU 位置波形采集
+
+`sentinel_pitch_experiment.py` 增加 `--position-amplitude-rad` 和 `--position-speed-rad-s`，同时显式填写 `--amplitude-nm 0`。主机持续续发固定中心目标，MCU 在该中心两侧生成限速往返位置波形。前置抬升与连续稳定判据仍生效；正常结束回到中心，故障继续按原路径撤销保持力矩。半周期必须容纳两倍振幅的运动时间，末段必须容纳单倍振幅的回中心时间。
+
+该模式要求固件对 `query_position` 返回 available，默认策略为零时拒绝，旧固件拒绝新操作。当前实验策略上限为振幅 `0.01 rad`、目标斜率 `0.1 rad/s`，属于待实车验证的配方边界。采集包络应大于位置振幅并给跟踪误差留余量；机械止点、命令带、实际角速度、编码后误差和含重力前馈的总力矩门槛均保留。
+
+Profile3/4 的 requested 保存主机固定中心，adopted 保存 MCU 本周期实际位置参考；同时保留原始 MIT CAN。应按实际 adopted 参考拟合闭环响应，不能仅从位置闭环响应直接宣称测出了裸电机惯量或阻尼。GUI 原有力矩方波按钮保持原行为，新模式先使用 CLI。
+
+采集后用 `sentinel_pitch_position_fit.py --input <pitch.sraw> --output <新fit.json> --plot <新response.png>` 做闭环离散模型拟合。前 60% 数据训练，后 40% 自由仿真验证；候选为一/二阶稳定模型，报告样本外 R²、RMSE 和直流增益。剔除无效位置和未提交输出，缺样处切断滞后窗口，不跨缺口插值。判据不足时退出 2 并保留报告，不自动写入增益。
+
+### Pitch 力矩反馈字段
+
+Pitch 方波路径为 `PitchIdentification` 加 `sentinel_pitch_experiment.py`，使用 Profile3 的 Pitch control 与原始 CAN 连续记录。它与独立的位置激励控制器分开；默认位置激励的 hardware_blocked 状态不表示 Pitch 方波已开启。
+
+固件通过已有参数读接口提供只读 `0x904 PMAX(rad)`、`0x905 VMAX(rad/s)`、`0x906 TMAX(N·m)`。采集前保存这些实际配置值和 `0x903 feedback_ttl_ms` 到 `.sraw` 的参数快照；不修改电调量程。上位机按该快照解码 CAN2 `0x011` 的 p16/v12/t12、状态及两路温度。旧文件/旧固件缺少量程时保留原始 CAN 字节，反馈物理量显示未知，不默认套用 12.5/30/10。
+
+每条控制记录只匹配其 MCU 计算时刻之前最近已记录的 CAN 接收记录，同一微秒按记录序号确定先后。两路流各有限频，因此匹配帧未必是该控制周期实际使用的帧，不能据此宣称精确同步或测量电调响应时延。CSV 保留 `pitch_feedback_received_us`、`pitch_feedback_source_sequence`、`pitch_feedback_age_us`；重复使用同一反馈不会刷新时间，超出 MCU 配置有效期、节点/状态无效或控制反馈失效时保留空值。32 位微秒回绕按短窗口差处理，不拼接不连续短窗。200 Hz 是各记录流上限，控制器的 `dt_s` 与导出记录间隔分别报告。
+
+`pitch_feedforward_torque_nm` 是编码后的 MIT 前馈指令；`pitch_reported_torque_nm` 是按 MCU 量程换算的电调上报力矩；两者分别保存。电调上报值尚未经独立传感器标定，不称为轴端精确力矩。Profile4 保留原有 64 字节 ABI，Pitch Kind7 的末字由未知值补为新鲜上报力矩，`arrived_us` 仍为该反馈的 MCU 接收时刻；归一化输出继续保持未知。
+
+采集完成后自动生成 `analysis.json`：包含误差 RMS/峰值、速度、力矩、温度、反馈年龄、实际记录间隔及缺口统计。必需字段缺失、NaN/Inf 或无效 dt 会使 `status=incomplete`，并在 `invalid_fields` 中列明字段及记录序号；其余有效值仍可用于部分诊断。`status` 描述已保存数据是否齐全，实验完成与否以 `summary.json` 的 `quality.complete` 为准。已有文件可从本 `source/` 目录离线重算（输出路径必须尚不存在）：
+
+```sh
+../../.venv/bin/python robots/sentinel/host/sentinel_pitch_feedback.py \
+  --input ../../build/identification/pitch/<本次记录>/pitch.sraw \
+  --output ../../build/identification/pitch/<本次记录>/analysis-recheck.json
+```
+
+分析只生成响应与数据质量统计，不自动写入 PID，也不把一次采集转成已验证的动力学模型。
+离线命令在完整分析时退出码为 0；数据不完整时仍保存报告并返回 2，错误原因见 `reasons`/`invalid_fields`。
 
 ### 同一固件切遥控验证
 

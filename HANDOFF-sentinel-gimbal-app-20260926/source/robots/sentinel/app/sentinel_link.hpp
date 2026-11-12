@@ -1,5 +1,5 @@
 #pragma once
-// 固定四槽 UART 应答出口: 变更结果、目标 ACK、快状态、低频页.
+// 固定五槽 UART 应答出口: 变更结果、目标 ACK、快状态、低频页、实验 STOP 专用 (免限速).
 // 已在 DMA 中的帧不能抢占; 只替换尚未发送的同类应答, 始终保留最新帧与原请求身份.
 #include "sentinel_protocol.hpp"
 #include "ec/transport/uart_frame.hpp"
@@ -20,7 +20,8 @@ public:
         return slot.size != 0;
     }
     template<class Send> bool service(Tick now, Send&& send) noexcept {
-        for (std::size_t i=0; i<slots_.size(); ++i) {
+        // 实验 STOP (槽 4) 优先且不受低频限速: 停止确认不能被状态页节流拖慢.
+        for (const auto i : std::array<std::size_t, 5>{4, 0, 1, 2, 3}) {
             auto& slot = slots_[i];
             if (!slot.size || (i == 3 && slow_sent_ && now.ms-last_slow_.ms < slow_period_ms_)) { continue; }
             if (!send(std::span<const std::uint8_t>{slot.wire.data(), slot.size})) { ++busy_; return false; }
@@ -37,6 +38,7 @@ public:
     [[nodiscard]] std::array<std::uint32_t, 10> diagnostics() const noexcept {
         std::array<std::uint32_t, 10> out{};
         for (std::size_t i=0; i<4; ++i) { out[i]=sent_[i]; out[4+i]=replaced_[i]; out[9]+=slots_[i].size ? 1u : 0u; }
+        out[0]+=sent_[4]; out[4]+=replaced_[4]; out[9]+=slots_[4].size ? 1u : 0u;
         out[8]=busy_; return out;
     }
 private:
@@ -47,13 +49,15 @@ private:
         case MessageType::pitch_identification:
             return 0;
         case MessageType::targets: case MessageType::permit: return 1;
+        // 实验 STOP (op=6, payload[11]) 走槽 4, 优先于低频页以便尽快回停止确认; 其余实验请求走槽 3.
+        case MessageType::experiment: return request.size >= 12 && request.payload[11] == 6 ? 4 : 3;
         case MessageType::status: return request.size == 11 && request.payload[10] == 0 ? 2 : 3;
         default: return 3;
         }
     }
     struct Slot { std::array<std::uint8_t, transport::uart_wire_max> wire{}; std::size_t size{}; };
-    std::array<Slot, 4> slots_{};
-    std::array<std::uint32_t, 4> sent_{}, replaced_{};
+    std::array<Slot, 5> slots_{};
+    std::array<std::uint32_t, 5> sent_{}, replaced_{};
     std::uint32_t busy_{}, slow_period_ms_{};
     Tick last_slow_{};
     bool slow_sent_{};

@@ -6,6 +6,8 @@ namespace ec::sentinel::recording {
 void Recorder::push(Record r, MicroTick now) noexcept {
     advance(now);
     if (state_ != State::recording) { return; }
+    // Profile4 exclusively admits atomic pairs via push_bundle().
+    if (profile_ == Profile::autotune) { return; }
     // 连续 control 流只承载 Pitch 关节: IMU 记录在入口即剔除, 不挤占 200 Hz 控制带宽.
     const bool pitch_stream = continuous_ && profile_ == Profile::control;
     if (pitch_stream && r.kind != Kind::can && r.kind != Kind::control) { return; }
@@ -26,6 +28,10 @@ void Recorder::push(Record r, MicroTick now) noexcept {
     case Kind::control:
         if (profile_ != Profile::control || r.stream != selected_domain_) { return; }
         key = 13 + r.stream; period = pitch_stream ? pitch_stream_period_us : 1000; break;
+    case Kind::autotune_state:
+    case Kind::autotune_aux:
+    default:
+        return; // Bundles are never admitted as individual records.
     }
     if (key >= last_.size()) { return; }
     if (seen_[key] && (r.source_sequence == sources_[key] || r.sampled_us - last_[key].us < period)) { return; }
@@ -33,6 +39,35 @@ void Recorder::push(Record r, MicroTick now) noexcept {
     r.sequence = sequence_++; r.run = run_;
     if (continuous_ && size_ == capacity) { ++lost_; return; }
     records_[(head_+size_)%capacity] = r; ++size_;
+    if (!continuous_ && size_ == capacity) { state_ = State::full; end_ = now; }
+}
+void Recorder::push_bundle(Record state, Record aux, MicroTick now) noexcept {
+    advance(now);
+    if (state_ != State::recording) { return; }
+    // Reject malformed pairs outright; never fall back to legacy single-record admission.
+    if (state.kind != Kind::autotune_state || aux.kind != Kind::autotune_aux) { return; }
+    if (profile_ != Profile::autotune || state.stream != selected_domain_) { return; }
+    // pair 一致性: state 与 aux 必须同 stream/source_sequence/sampled_us, 否则拒绝 (不写任何一条).
+    if (aux.stream != state.stream || aux.source_sequence != state.source_sequence ||
+        aux.sampled_us != state.sampled_us) { return; }
+    // 兜底去重: 相同 source_sequence 的 bundle 重复 (board 每 fastcycle 调 trace 而本周期未再计算)
+    // 只写一次, 不增加槽. 按 selected domain 分槽, 与 legacy 单条 key(Domain) 不冲突.
+    const std::size_t bkey = 20 + selected_domain_;
+    if (bkey < last_.size() && seen_[bkey] && state.source_sequence == sources_[bkey]) { return; }
+    // 成对不按去重周期丢弃: 每个控制周期都要一对, 靠序列单调而非时间去重.
+    const std::size_t room = capacity - size_;
+    if (room < 2) {
+        if (continuous_) { lost_ += 2; return; }
+        // 短窗: 整 bundle 放不下 -> 不写任何一条, 标记满并记录丢弃, 无孤立尾部.
+        lost_ += 2; state_ = State::full; end_ = now; return;
+    }
+    if (bkey < last_.size()) { sources_[bkey] = state.source_sequence; seen_[bkey] = true; }
+    state.sequence = sequence_++;
+    state.run = run_;
+    aux.sequence = sequence_++;
+    aux.run = run_;
+    records_[(head_ + size_) % capacity] = state; ++size_;
+    records_[(head_ + size_) % capacity] = aux; ++size_;
     if (!continuous_ && size_ == capacity) { state_ = State::full; end_ = now; }
 }
 void Recorder::imu(const drivers::Bmi088Reading& sample, MicroTick now) noexcept {
@@ -91,7 +126,10 @@ std::size_t Recorder::request(std::span<const std::uint8_t> in, std::span<std::u
     std::uint8_t error{};
     if (op == 1) {
         // 短窗开放 control 域 6 (Pitch DM 关节域), 移除了历史排除 (in[2] == 3 && in[3] == 6)
-        if (!run || in[2] < 1 || in[2] > 3 || in[3] > 9 || (in[2] != 3 && in[3] != 0) || arg == 0 || arg > 2000000u) { error = 1; }
+        const bool autotune = in[2] == static_cast<std::uint8_t>(Profile::autotune);
+        const bool bad_profile = autotune ? (in[3] != 5 && in[3] != 6)
+            : (in[2] < 1 || in[2] > 3 || in[3] > 9 || (in[2] != 3 && in[3] != 0));
+        if (!run || bad_profile || arg == 0 || arg > 2000000u) { error = 1; }
         else if (run == run_) {
             if (in[2] != static_cast<std::uint8_t>(profile_) || in[3] != selected_domain_ || arg != duration_) { error = 2; }
         } else if (state_ == State::recording) { error = 3; }
@@ -135,8 +173,10 @@ std::size_t Recorder::stream_request(std::span<const std::uint8_t> in,
         // 连续流支持 Profile 1(stationary)/2(rotation) 以及 Profile 3(control) 的域 6 (Pitch 达妙 DM).
         // continuous control 仅开放域 6, 且 stream_packet 对 control 记录按完整 64B 承载 (不截断),
         // 两条流各限速 200 Hz, 使 UART 带宽维持在物理预算内.
-        if (!run || in[2]<1 || in[2]>3 || (in[2]==3 ? in[3]!=6 : in[3]!=0)
-            || !duration || duration>1800000000u) { error=1; }
+        const bool autotune = in[2] == static_cast<std::uint8_t>(Profile::autotune);
+        const bool bad_profile = autotune ? (in[3] != 5 && in[3] != 6)
+            : (in[2]<1 || in[2]>3 || (in[2]==3 ? in[3]!=6 : in[3]!=0));
+        if (!run || bad_profile || !duration || duration>1800000000u) { error=1; }
         else if (continuous_ && run==run_) {
             if (static_cast<std::uint8_t>(profile_)!=in[2] || selected_domain_!=in[3] || duration_!=duration) { error=2; }
         } else if (state_==State::recording || (continuous_ && size_)) { error=3; }
@@ -157,10 +197,11 @@ std::size_t Recorder::stream_packet(std::span<std::uint8_t> out, MicroTick now,
     if (!continuous_ || stream_finished_ || out.size()<32 || (size_==0 && state_==State::recording)) { return 0; }
     std::size_t length=32;
     // 最多3条/帧; 仅省去未使用的payload尾部, 主机无损恢复标准64B记录.
-    // 每条按自身类型定长: gyro 48B, CAN 44B, control 完整 64B (绝不截断控制字); 混合3条仍 <= 224B.
+    // 每条按自身类型定长: gyro 48B, CAN 44B, control/Kind6/7 完整 64B; 混合3条仍 <= 224B.
     for (;count<std::min<std::size_t>(3,size_);++count) {
         const auto& r=records_[(head_+count)%capacity];
-        const std::size_t bytes=r.kind==Kind::gyro ? 48 : r.kind==Kind::control ? record_bytes : 44;
+        const std::size_t bytes=r.kind==Kind::gyro ? 48
+            : (r.kind==Kind::control || r.kind==Kind::autotune_state || r.kind==Kind::autotune_aux) ? record_bytes : 44;
         if (out.size()-length<bytes) { break; }
         std::array<std::uint8_t,record_bytes> full{};
         (void)encode(r,full);std::copy_n(full.begin(),bytes,out.begin()+length);length+=bytes;

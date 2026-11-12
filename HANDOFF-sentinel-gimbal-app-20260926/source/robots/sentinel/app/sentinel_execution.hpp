@@ -9,7 +9,10 @@
 #include "sentinel_app.hpp"
 #include "sentinel_config.hpp"
 #include "sentinel_dji_identification.hpp"
+#include "sentinel_experiment.hpp"
+#include "sentinel_experiment_runtime.hpp"
 #include "sentinel_params.hpp"
+#include "sentinel_oscillation_guard.hpp"
 #include "raw_record.hpp"
 #include <array>
 #include <cstddef>
@@ -30,6 +33,12 @@ namespace ec::sentinel::app {
 struct JointReference {
     bool valid{};
     float joint_rad{};
+};
+
+// Read-only Profile4 pair. Recorder owns record sequence/run; experiment identity is side metadata.
+struct AutotuneBundle {
+    recording::Record state{};
+    recording::Record aux{};
 };
 
 struct ExecutorStats {
@@ -103,9 +112,35 @@ public:
     // 应当用这个而不是设备原生量, 否则非零零位时两处不是同一个角.
     [[nodiscard]] DomainFeedback joint_feedback(Domain domain, Tick now) const noexcept;
 
+    // 激励实验只读安全门: 设备真相 + 最后一次执行意图, 由调用方 (bridge) 再叠加当周期
+    // 应用层目标/权限事实. 不写任何设备, 不伪造反馈.
+    [[nodiscard]] excitation::Guards experiment_guards(Domain domain, Tick now) const noexcept;
+    [[nodiscard]] MicroTick experiment_time(Tick now) const noexcept {
+        return clock_ ? clock_() : MicroTick{now.ms * 1000u};
+    }
+    // Controlled local boot wiring only; never reachable from host request bytes.
+    // Binding/context must outlive the executor; no allocation/blocking in callback.
+    bool bind_experiment_runtime(excitation::RuntimeBinding binding) noexcept {
+        if (stats_.cycles != 0 || experiment_active_) { return false; }
+        experiment_runtime_ = binding;
+        return true;
+    }
+    [[nodiscard]] excitation::RuntimeReport experiment_runtime(
+        const excitation::RuntimeQuery& query) const noexcept {
+        return excitation::evaluate_runtime(experiment_runtime_, query);
+    }
+    void set_experiment_active(bool active) noexcept { experiment_active_ = active; }
+    [[nodiscard]] bool experiment_active() const noexcept { return experiment_active_; }
+
     // 从真实设备反馈推导应用层健康/故障输入. 会推进自动参考恢复, 但从不虚构反馈.
     [[nodiscard]] FaultInputs health(Tick now) noexcept;
     [[nodiscard]] const FaultInputs& last_health() const noexcept { return health_; }
+    // Approved thresholds are supplied only by controlled local deployment code.
+    // An unconfigured Guardian is not normal and never admits an experiment.
+    [[nodiscard]] bool configure_guardian(Domain domain,
+        const oscillation::GuardianLimits& limits) noexcept;
+    [[nodiscard]] oscillation::GuardianReport guardian_report(Domain domain) const noexcept;
+    [[nodiscard]] const oscillation::GuardianLimits& guardian_limits(Domain domain) const noexcept;
 
     // 一个执行周期: 按 app 的执行结论使能/设目标/撤输出, 再按组提交并处理 pitch.
     void step(Tick now, float dt_s, const SentinelApp& app,
@@ -113,6 +148,9 @@ public:
     [[nodiscard]] const ExecutorStats& stats() const noexcept { return stats_; }
     [[nodiscard]] const MainYawControlStats& main_yaw_stats() const noexcept { return main_yaw_stats_; }
     [[nodiscard]] std::optional<recording::Record> trace(Domain domain, Tick now, const SentinelApp& app) const noexcept;
+    [[nodiscard]] std::optional<AutotuneBundle> autotune_trace(
+        Domain domain, Tick now, const SentinelApp& app) const noexcept;
+    [[nodiscard]] std::uint32_t param_epoch() const noexcept { return param_epoch_; }
     [[nodiscard]] const ExecutorGroupStats& pitch_stats() const noexcept { return pitch_stats_; }
     [[nodiscard]] std::optional<ExecutorGroupStats> group_stats(std::size_t index) const noexcept {
         return index < group_count_ ? std::optional{groups_[index].stats} : std::nullopt;
@@ -186,9 +224,12 @@ private:
     [[nodiscard]] bool pitch_capture_healthy(MicroTick at) const noexcept;
     void step_pitch(Tick now, const SentinelApp& app, bool force_stop = false) noexcept;
     void query_pitch() noexcept;
+    [[nodiscard]] oscillation::GuardianSample build_guardian_sample(const SentinelApp& app,
+        Tick now, MicroTick at, float dt_s, const std::optional<float>& output) const noexcept;
     [[nodiscard]] bool send_pitch_frame(const transport::CanFrame& frame) noexcept;
     [[nodiscard]] bool pitch_output_fresh() noexcept;
     void send_groups(Tick now) noexcept;
+    void observe_param_epoch() noexcept;
 
     SentinelConfig config_{};
     ConfigReport report_{};
@@ -203,6 +244,12 @@ private:
     std::array<std::optional<DomainRuntime>, domain_count> runtime_{};
     std::array<JointReference, domain_count> references_{};
     std::array<std::optional<drivers::DjiOutput>, dji_slot_count> outputs_{};
+    struct AcceptedDjiOutput {
+        float normalized{};
+        std::array<std::uint8_t, 2> encoded{};
+        MicroTick computed_at{};
+    };
+    std::array<std::optional<AcceptedDjiOutput>, dji_slot_count> accepted_outputs_{};
     std::array<bool, domain_count> unreachable_{};
     std::array<bool, domain_count> rejected_{};
     FaultInputs health_{};
@@ -216,6 +263,15 @@ private:
     MainYawControlStats main_yaw_stats_{};
     bool main_inertial_active_{};
     ExecutorGroupStats pitch_stats_{};
+    std::uint32_t param_epoch_{};
+    std::array<float, 6> fire_gain_tuple_{};
+    std::array<float, 2> pitch_gain_tuple_{};
+    bool param_epoch_seeded_{};
+    bool pitch_last_timing_error_{};
+    bool pitch_computed_this_step_{};
+    std::optional<transport::CanFrame> pitch_last_frame_{};
+    std::uint8_t pitch_last_frame_kind_{};
+    std::array<std::optional<transport::CanFrame>, 8> last_group_frames_{};
     bool pitch_enable_requested_{};
     bool pitch_enable_confirmed_{};
     bool pitch_disable_requested_{};
@@ -227,12 +283,20 @@ private:
     recording::Recorder* pitch_recorder_{};
     ScheduledStep pitch_step_{};
     std::optional<float> pitch_last_encoded_feedforward_nm_{};
+    std::optional<float> pitch_last_reference_rad_{};
     std::optional<MicroTick> pitch_last_mit_attempt_at_{};
     std::optional<MicroTick> pitch_last_mit_submitted_at_{};
     drivers::DjiGroupStatus pitch_last_mit_status_{drivers::DjiGroupStatus::not_sent};
     // DJI 系统辨识: 每槽可选激励器/可用标志/绑定 run, 以及最近一次注入的真实激励电流.
     std::array<std::optional<DjiIdentification>, dji_slot_count> dji_identification_{};
     std::array<bool, dji_slot_count> dji_identification_available_{};
+    // 激励实验进行中: 保持增益元组稳定, 排队变更保持 pending.
+    bool experiment_active_{};
+    excitation::RuntimeBinding experiment_runtime_{};
+    oscillation::GuardianLimits fire_guardian_limits_{};
+    oscillation::SentinelOscillationGuard fire_guardian_{};
+    bool fire_guardian_configured_{};
+    std::optional<std::uint32_t> fire_guardian_last_step_us_{};
     std::array<std::uint32_t, dji_slot_count> dji_identification_run_{};
     std::array<float, dji_slot_count> dji_last_excitation_a_{};
 };

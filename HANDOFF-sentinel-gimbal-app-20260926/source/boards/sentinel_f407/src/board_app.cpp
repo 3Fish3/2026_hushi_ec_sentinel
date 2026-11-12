@@ -9,6 +9,8 @@
 #include "gm6020_bench_velocity.hpp"
 #endif
 #include "board_assembly.hpp"
+#include "board_experiment_deployment.hpp"
+#include "board_experiment_runtime.hpp"
 #include "board_inputs.hpp"
 #include "board_io.h"
 #include "board_registry.h"
@@ -165,6 +167,65 @@ void publish_observation(Tick now) noexcept {
 }
 } // 内部对象与周期辅助
 
+
+// 受控本地运行时证据源: 独立固定源 id, 证据逐次从执行器/应用真实状态读取.
+// 采样时刻用板级单调微秒时钟, 不回显 query; 批准/清除位只来自真实 Guardian 报告,
+// 未配置/observe_only/锁存时永远不 ready. lease 仅遥测, 不授予运动资格.
+namespace local_runtime {
+constexpr std::uint32_t source_id = 0x45435254u; // "ECRT": pinned local provenance.
+constexpr std::uint32_t ttl_us = 5000;           // 一个控制周期的显式证据时限.
+
+const SentinelApp* app = nullptr;
+const SentinelExecutor* executor = nullptr;
+oscillation::GuardianLimits limits{};
+
+void bind(const SentinelApp* a, const SentinelExecutor* e,
+    const oscillation::GuardianLimits& l) noexcept {
+    app = a;
+    executor = e;
+    limits = l;
+}
+
+excitation::RuntimeEvidence evidence(void*, const excitation::RuntimeQuery& query) noexcept {
+    excitation::RuntimeEvidence ev{};
+    if (app == nullptr || executor == nullptr) { return ev; }
+    const auto now_us = static_cast<std::uint32_t>(ec_board_micros());
+    ev.sampled_us = now_us;
+    ev.source_id = source_id;
+    ev.axis = excitation::Axis::fire_yaw;
+    ev.param_epoch = executor->param_epoch();
+    ev.config_epoch = app->config_epoch();
+    ev.reference_epoch = app->reference_epoch();
+    // 身份字段从真实受控部署 root 读取 (非 query); boot 由受控头提供, 未提供则保持 0.
+    const auto root = deployment::experiment_root();
+    ev.boot_id = root.boot_id;
+    ev.axis_identity = root.axis_identity;
+    const auto report = executor->guardian_report(Domain::fire_yaw);
+    // 编码映射必须显式比较: GuardState::normal==2 与 RuntimeGuardianState::normal==0
+    // 是两套独立编码, 直接 static_cast 原始值曾导致守护 normal 时准入恒 inhibited.
+    static_assert(static_cast<std::uint8_t>(oscillation::GuardState::normal) !=
+                      static_cast<std::uint8_t>(excitation::RuntimeGuardianState::normal),
+                  "guardian state encodings are independent; map explicitly, never cast");
+    ev.guardian_state = report.state == oscillation::GuardState::normal
+        ? static_cast<std::uint8_t>(excitation::RuntimeGuardianState::normal)
+        : static_cast<std::uint8_t>(excitation::RuntimeGuardianState::not_normal);
+    ev.guardian_version = report.guard_version;
+    // 只读真实守护结论: approved 模式且非 observe/synthetic, 未锁存/未抑制才算批准.
+    ev.approved = limits.mode == oscillation::GuardMode::approved && !report.inhibit();
+    ev.clear = report.state == oscillation::GuardState::normal;
+    ev.inhibited = report.inhibit();
+    ev.latched = report.latched;
+    // 参数租约: 本地运行时无租约来源, 保持 false, 不授予运动资格.
+    ev.lease_active = false;
+    (void)query;
+    return ev;
+}
+
+excitation::RuntimeBinding binding() noexcept {
+    return excitation::RuntimeBinding{&local_runtime::evidence, nullptr, source_id, ttl_us};
+}
+} // namespace local_runtime
+
 void ec_app_init() noexcept {
     static_assert(app::domain_count == EC_APP_DOMAIN_COUNT, "观测视图域数与应用域数必须一致");
     static_assert(app::dji_slot_count == EC_APP_DJI_SLOT_COUNT, "观测视图 DJI 槽数与应用槽数必须一致");
@@ -191,14 +252,30 @@ void ec_app_init() noexcept {
     executor.emplace(config, ConfigAudience::deployment, *bus1, *bus2,
         []() noexcept { return MicroTick{ec_board_micros()}; });
     executor->bind_pitch_recorder(&ec_raw_recorder());
+    // 守护阈值与运行时证据都来自受控本地部署边界, UART 请求字节无法触及.
+    // 守护阈值默认 unconfigured => experiment_guardian_limits() 返回零值被拒绝,
+    // Guardian 不进入 normal; 只有经受控部署头注入版本化+现场批准阈值后才生效.
+    (void)executor->configure_guardian(Domain::fire_yaw, deployment::experiment_guardian_limits());
+    // 受控本地运行时证据源: 证据读自执行器/应用真实状态与板级单调微秒时钟,
+    // 不回显 query 字段, 不伪造批准; 守护未达 normal 时 guardian_state 映射为
+    // not_normal 且 approved/clear 为假, 恒不 ready.
+    local_runtime::bind(&*application, &*executor, deployment::experiment_guardian_limits());
+    (void)executor->bind_experiment_runtime(local_runtime::binding());
     pitch_stream.emplace(ec_raw_recorder());
     perception.emplace(config, ConfigAudience::deployment);
     params.emplace(config);
+    // 空 deployment 保持 disabled/hardware_blocked; 不是仿真控制器.
+    // 仅当经 EC_TRUSTED_EXPERIMENT_PROVIDER_HEADER 注入真实测量限值+批准记录时才切硬件控制器.
+    const auto experiment_config = deployment::experiment_config();
+    const auto experiment_root = deployment::experiment_root();
     // 会话链路时限来自部署配置: 漏传会让构造默认的无效时限把老化变成"永不失效".
-    session.emplace(*application, *params, &*executor, &*perception, config.timing.host_link_ttl);
+    session.emplace(*application, *params, &*executor, &*perception, config.timing.host_link_ttl,
+        experiment_root.boot_id, &experiment_config, &experiment_root);
     // 操纵映射量程/档位阈值属实测项: 部署配置里为 0 表示"未配置", 不冒充已标定数值.
     cycle.emplace(*application, *executor, *perception, board::deployment_mapping(),
         config.timing.remote_ttl);
+    // 周期层直接驱动同一实验控制器: 状态机与记录在 control()/commit() 内推进.
+    cycle->bind_experiment(session->experiment_controller());
     const auto& report = application->report();
     config_missing_items = report.issue_count;
     ready = true;
@@ -363,6 +440,12 @@ extern "C" void ec_board_app_commit(std::uint32_t now_ms) {
     static_cast<void>(now_ms);
     // 提交半周期: 真实设备编解码与 CAN 组帧, 以及命令预测积分 (不是轮速反馈里程计).
     cycle->commit(cycle_inputs);
+    const auto autotune_axis = ec_raw_autotune_axis();
+    if (autotune_axis >= 0) {
+        if (const auto bundle = executor->autotune_trace(static_cast<Domain>(autotune_axis), {now_ms}, *application)) {
+            ec_raw_push_bundle(bundle->state, bundle->aux);
+        }
+    }
     const auto domain = ec_raw_control_domain();
     if (domain >= 0) {
         if (const auto record = executor->trace(static_cast<Domain>(domain), {now_ms}, *application)) { ec_raw_push(*record); }

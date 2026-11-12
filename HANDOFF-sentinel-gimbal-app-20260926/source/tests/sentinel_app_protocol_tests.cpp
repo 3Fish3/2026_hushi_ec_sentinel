@@ -146,7 +146,11 @@ struct Rig {
         const auto request_sequence = static_cast<std::uint16_t>(++frame_seq);
         auto size = transport::encode_uart_frame(type, request_sequence, payload, wire);
         CHECK(size != 0);
-        if (corrupt_crc) { wire[size - 2] ^= 0x5a; }
+        // size>=2 must be a real branch condition the optimizer can see:
+        // CHECK(size != 0) alone cannot rule out size==1, where size-2
+        // underflows (the -Werror=stringop-overflow build break).
+        CHECK(!corrupt_crc || size >= 2);
+        if (corrupt_crc && size >= 2) { wire[size - 2] ^= 0x5a; }
         if (truncate) { size -= 3; }
         transport::UartFrameDecoder decoder{};
         std::optional<transport::UartFrame> request{};

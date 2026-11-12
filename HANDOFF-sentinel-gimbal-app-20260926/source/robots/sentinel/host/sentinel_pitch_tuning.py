@@ -8,6 +8,7 @@ import threading
 
 import sentinel_pitch_experiment as experiment
 import sentinel_raw as raw
+from sentinel_pitch_feedback import analyze_rows
 from sentinel_pitch_hold_model import PhysicalBounds, SupervisorLimits
 
 
@@ -132,13 +133,15 @@ def capture_view(path):
     if not control:
         raise ValueError('记录中没有 Pitch control 数据')
     fields = ('pitch_adopted_rad', 'pitch_measured_rad', 'pitch_measured_velocity_rad_s',
-              'pitch_feedforward_torque_nm')
+              'pitch_feedforward_torque_nm', 'pitch_reported_torque_nm',
+              'pitch_mos_temperature_c', 'pitch_rotor_temperature_c')
     times = [row['t_s'] for row in control]
-    series = {key: [row.get(key, math.nan) for row in control] for key in fields}
+    series = {key: [row.get(key) if row.get(key) is not None else math.nan for row in control]
+              for key in fields}
     error = [target - measured for target, measured in
              zip(series['pitch_adopted_rad'], series['pitch_measured_rad'])
              if math.isfinite(target) and math.isfinite(measured)]
-    return {'metadata': metadata, 'times': times, 'series': series,
+    return {'metadata': metadata, 'times': times, 'series': series, 'analysis': analyze_rows(metadata, rows),
             'records': len(rows), 'control_records': len(control),
             'gaps': sum(row['gap'] for row in rows), 'lost_max': max(row['lost'] for row in rows),
             'rms_error_rad': math.sqrt(sum(x*x for x in error) / len(error)) if error else None,

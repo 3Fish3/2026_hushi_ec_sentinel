@@ -27,6 +27,7 @@ from typing import Any
 
 import sentinel_client as wire
 import sentinel_raw as raw
+from sentinel_pitch_feedback import analyze_rows, config_from_parameters
 from sentinel_async import AsyncSentinelClient
 from sentinel_pitch_hold import WARNING, ExclusiveSerial, Keys
 from sentinel_pitch_hold_model import (
@@ -40,7 +41,7 @@ from sentinel_pitch_hold_model import (
 
 SOURCE = Path(__file__).resolve().parents[3]
 ROOT = SOURCE.parents[1]
-METADATA_BYTES = 8192
+METADATA_BYTES = 16384
 EXPECTED_TARGET_TTL_MS = 100      # 固件目标有效期契约 (board_app_config.hpp)
 MAX_HOLD_BUDGET_S = 0.05          # 监督预算 = min(target, link) TTL / 2
 MIN_STOP_MARGIN_RAD = 0.02        # 行程包络与机械止挡之间的最小余量
@@ -155,11 +156,23 @@ class ExperimentRecipe:
     baseline_us: int
     cycles: int
     final_hold_us: int
+    position_amplitude_rad: float = 0.0
+    position_speed_rad_s: float = 0.0
 
     def __post_init__(self):
         if type(self.run) is not int or not 0 < self.run <= 0xffffffff:
             raise ValueError(f'run must be a non-zero uint32, got {self.run!r}')
-        if not math.isfinite(self.amplitude_nm) or self.amplitude_nm <= 0:
+        position = self.position_amplitude_rad > 0
+        if not all(math.isfinite(v) for v in (self.position_amplitude_rad, self.position_speed_rad_s)):
+            raise ValueError('position settings must be finite')
+        if position:
+            if self.amplitude_nm != 0 or self.position_speed_rad_s <= 0:
+                raise ValueError('position waveform requires zero torque amplitude and positive position speed')
+            if 2*self.position_amplitude_rad/self.position_speed_rad_s*1e6 > self.half_period_us or self.position_amplitude_rad/self.position_speed_rad_s*1e6 > self.final_hold_us:
+                raise ValueError('position waveform must have time to reach both ends and return to centre')
+        elif self.position_amplitude_rad != 0 or self.position_speed_rad_s != 0:
+            raise ValueError('invalid position settings')
+        if not math.isfinite(self.amplitude_nm) or (self.amplitude_nm < 0 if position else self.amplitude_nm <= 0):
             raise ValueError(f'amplitude_nm must be positive and finite, got {self.amplitude_nm}')
         for name in ('half_period_us', 'baseline_us', 'cycles', 'final_hold_us'):
             value = getattr(self, name)
@@ -211,6 +224,8 @@ class ExperimentPlan:
             raise ValueError('stream duration must exceed the whole excitation waveform')
         if not math.isfinite(self.excursion_rad) or not 0 < self.excursion_rad <= 0.02:
             raise ValueError(f'excursion must be in (0, 0.02] rad, got {self.excursion_rad}')
+        if self.recipe.position_amplitude_rad >= self.excursion_rad:
+            raise ValueError('position amplitude must leave room inside capture envelope')
         if type(self.stream_packet_min) is not int or self.stream_packet_min < 1:
             raise ValueError('stream_packet_min must be a positive integer')
         for name in ('hold_timeout_s', 'post_hold_s'):
@@ -414,10 +429,12 @@ def _await_stream(run, future):
 
 def _start_excitation(run):
     recipe = run.plan.recipe
-    future = run.peer.pitch_identification('start', run_id=recipe.run, amplitude_nm=recipe.amplitude_nm,
+    extra = (dict(position_amplitude_rad=recipe.position_amplitude_rad,
+                  position_speed_rad_s=recipe.position_speed_rad_s) if recipe.position_amplitude_rad else {})
+    future = run.peer.pitch_identification('start_position' if extra else 'start', run_id=recipe.run, amplitude_nm=recipe.amplitude_nm,
                                            half_period_us=recipe.half_period_us,
                                            baseline_us=recipe.baseline_us, cycles=recipe.cycles,
-                                           final_hold_us=recipe.final_hold_us)
+                                           final_hold_us=recipe.final_hold_us, **extra)
     deadline = run.clock() + MAX_HOLD_BUDGET_S
     while not future.done():
         if _operator_stop(run):
@@ -561,6 +578,10 @@ def run_experiment(peer, plan, output_dir, *, stop_event=None, keys=None, clock=
         parameters = _bounded(peer.read_all_params(), 3.0, 'gain snapshot')  # 只读快照, 绝不回写
         # 固件没有可信辨识策略时必须在授权/目标之前拒绝.
         available = _bounded(peer.pitch_identification('query'), 1.0, 'identification preflight')
+        if plan.recipe.position_amplitude_rad:
+            position_capability = _bounded(peer.pitch_identification('query_position'), 1.0, 'position capability')
+            if position_capability.get('result') != 0 or not position_capability.get('available'):
+                raise RuntimeError('firmware has no opted-in Pitch position waveform')
         if auto_run_id:
             # 同一会话连续采集必须使用递增编号, 不用随机数碰运气绕过固件重放检查.
             run_id = available['run_id'] + 1
@@ -583,7 +604,7 @@ def run_experiment(peer, plan, output_dir, *, stop_event=None, keys=None, clock=
                                   shared_slow_lane=hello.get('config_kind') == 2)
         report['lift'] = {'initial_rad': center, 'settled': False} if plan.lift is not None else None
         metadata = {
-            'layout_id': raw.LAYOUT, 'tool': 'sentinel_pitch_experiment', 'run': plan.recipe.run,
+            'layout_id': raw.LAYOUT, 'tool': 'SPX', 'run': plan.recipe.run,
             'source': 'APP_MIT_SIMULATION_ONLY' if hello.get('config_kind') == 1 else 'APP_MIT_REAL_UNVALIDATED',
             'hardware_ready': False, 'deployable_gains': False,
             'start_us': 0,  # 首条记录到达后就地回填
@@ -597,7 +618,8 @@ def run_experiment(peer, plan, output_dir, *, stop_event=None, keys=None, clock=
             'session': hello.get('session'), 'identity': hello.get('identity'),
             'boot_id': hello.get('boot_id'), 'config_kind': hello.get('config_kind'),
             'target_ttl_ms': timing['target_ttl_ms'], 'link_ttl_ms': timing['link_ttl_ms'],
-            'parameters': parameters, 'warning': WARNING,
+            'parameters': parameters, 'warning': 'STOP REMOVES HOLDING TORQUE. Mechanical support required.',
+            'pitch_feedback': config_from_parameters(parameters),
         }
         report['source'] = metadata['source']
         # 独占新目录: 绝不覆盖既有记录, 且被拒绝的配置不留下半成品目录.
@@ -634,8 +656,10 @@ def run_experiment(peer, plan, output_dir, *, stop_event=None, keys=None, clock=
         stream_future = peer.start_pitch_stream(plan.recipe.run, plan.stream_duration_us)
         stream_started = True
         report['stream'] = _await_stream(run, stream_future)
-        identification_started = True
+        # 只有固件真正接受 start 之后才标记已启动: 若 start 被拒(如 run_id 回退),
+        # 清理阶段绝不能发 cancel——固件会把它锁存为 fault/cancelled 且无运行时 reset 路径.
         report['identification'] = _start_excitation(run)
+        identification_started = True
         report['identification'] = _supervise_excitation(run)
         identification_complete = True
         report['stop'] = _post_complete_hold(run)
@@ -716,7 +740,7 @@ def _finalise(directory, plan, report, *, sealed=True):
     """
     # manifest 内嵌 files 自身, 两个自引用路径必须在序列化前就确定;
     # 否则 04 那次 manifest 里 files.manifest/files.summary 是空字符串.
-    files = {'sraw': str(directory / 'pitch.sraw'), 'csv': '',
+    files = {'sraw': str(directory / 'pitch.sraw'), 'csv': '', 'analysis': '',
              'manifest': str(directory / 'manifest.json'),
              'summary': str(directory / 'summary.json')}
     errors = report['cleanup_errors']
@@ -732,9 +756,10 @@ def _finalise(directory, plan, report, *, sealed=True):
     else:
         errors.append('sraw writer still running: CSV 导出与解析已跳过, 记录视为不完整')
     rows = []
+    metadata = {}
     if sealed and not errors:
         try:
-            _, rows = raw.load(directory / 'pitch.sraw')
+            metadata, rows = raw.load(directory / 'pitch.sraw')
         except Exception as error:
             errors.append(f'quality validation: {error}')
     status = (report.get('stream_final') or {}).get('last_status') or {}
@@ -770,7 +795,16 @@ def _finalise(directory, plan, report, *, sealed=True):
                             and report.get('identification', {}).get('state_name') == 'complete'
                             and bool(report.get('stream_final', {}).get('finished')))}
     report['quality'] = quality
-    manifest = {'tool': 'sentinel_pitch_experiment', 'run': plan.recipe.run,
+    if rows:
+        report['analysis'] = analyze_rows(metadata, rows)
+        try:
+            _write_json(directory / 'analysis.json', report['analysis'])
+            files['analysis'] = str(directory / 'analysis.json')
+        except Exception as error:
+            errors.append(f'analysis.json: {error}')
+            report['error'] = report['error'] or str(error)
+            quality['complete'] = False
+    manifest = {'tool': 'sentinel_pitch_experiment', 'tool_sraw': 'SPX', 'run': plan.recipe.run,
                 'source': report.get('source', 'UNKNOWN'),
                 'hardware_ready': False, 'deployable_gains': False, 'quality': quality,
                 'recipe': asdict(plan.recipe), 'stream_duration_us': plan.stream_duration_us,
@@ -824,6 +858,8 @@ def parser():
                  'final-hold-us', 'stream-duration-us', 'hold-timeout', 'post-hold'):
         p.add_argument('--' + name, type=float)
     p.add_argument('--cycles', type=int)
+    p.add_argument('--position-amplitude-rad', type=float, default=0.0, help='MCU position waveform amplitude; requires --amplitude-nm 0')
+    p.add_argument('--position-speed-rad-s', type=float, default=0.0, help='MCU position-reference slew rate')
     p.add_argument('--stream-packets', type=int, default=2)
     p.add_argument('--lift-to-rad', type=float, help='optional calibrated joint target; horizontal is usually 0')
     p.add_argument('--lift-speed', type=float, help='commanded lift speed, rad/s')
@@ -868,7 +904,9 @@ def build_plan(args, p) -> ExperimentPlan:
     try:
         recipe = ExperimentRecipe(run=run, amplitude_nm=args.amplitude_nm,
                                   half_period_us=int(args.half_period_us), baseline_us=int(args.baseline_us),
-                                  cycles=args.cycles, final_hold_us=int(args.final_hold_us))
+                                  cycles=args.cycles, final_hold_us=int(args.final_hold_us),
+                                  position_amplitude_rad=args.position_amplitude_rad,
+                                  position_speed_rad_s=args.position_speed_rad_s)
         duration_us = (int(args.stream_duration_us) if args.stream_duration_us is not None
                        else int(recipe.excitation_us * 1.5 + 1e6))
         limits = SupervisorLimits(max_temperature_c=args.max_temperature, max_effort_nm=args.max_torque,

@@ -194,6 +194,8 @@ class Console:
                                     dpg.add_table_column(label=label)
                         with dpg.tab(label='辅助调参', tag='assist_tab'):
                             self.build_assistance()
+                        with dpg.tab(label='实验定位 / 人工确认', tag='positioning_tab'):
+                            self.build_positioning()
                         with dpg.tab(label='状态 / 日志',tag='logs_tab'):
                             dpg.add_text('状态页与通信统计, 不隐藏未配置/失效原因', color=MUTED)
                             dpg.add_input_text(tag='details', multiline=True, readonly=True, width=-1, height=310)
@@ -205,6 +207,63 @@ class Console:
             for button in (dpg.mvMouseButton_Left,dpg.mvMouseButton_Right):
                 dpg.add_mouse_down_handler(button=button,callback=lambda:self.plot_interaction())
         self.scope_changed()
+
+    def build_positioning(self):
+        dpg.add_text('独立动作: PREPARE → ARM → POSITION → 保持 / 人工检查 → HUMAN CONFIRM → START', wrap=730)
+        dpg.add_text('默认 Hardware blocked。参数必须显式输入；输入上下界不是真实物理边界证据。Pitch 服从 MCU blocked。', color=AMBER, wrap=730)
+        dpg.add_text('仅单独 START 点击才打开有限 Profile4 窗口；定位/等待/确认不占用记录。不会复用旧 assist_capture。', color=AMBER, wrap=730)
+        dpg.add_text('JSON: recipe / policy / capture。capture 的 run、scheduling_margin_us、全新 output_path 必须显式提供；无推荐实车默认数值。', wrap=730)
+        from sentinel_experiment_positioning import RECIPE_UINTS, RECIPE_FLOATS, RECIPE_TIMES, POLICY_FLOATS, POLICY_TIMES
+        schema = {'recipe': {k: None for k in ('axis', 'pattern', 'experiment_session', 'nonce',
+                  *RECIPE_UINTS, *RECIPE_FLOATS, *RECIPE_TIMES, 'repeats')},
+                  'policy': {k: None for k in ('human_token', *POLICY_FLOATS, *POLICY_TIMES)},
+                  'capture': {'run': None, 'scheduling_margin_us': None, 'output_path': None}}
+        dpg.add_input_text(tag='positioning_json', default_value=json.dumps(schema, indent=2),
+            multiline=True, width=-1, height=300, callback=lambda:self.positioning_draft_changed())
+        dpg.add_text('axis: fire_yaw / pitch; pattern: bounded_step / trapezoid; 时间单位 us，位置 rad，速度 rad/s。', wrap=730)
+        dpg.add_checkbox(label='Hardware blocked (默认禁止变更)', tag='positioning_blocked', default_value=True,
+            callback=lambda:self.positioning_draft_changed())
+        self.button('校验 / 加载草稿 (不发送)', self.positioning_load)
+        with dpg.group(horizontal=True):
+            for label, action in (('1 PREPARE', 'prepare'), ('2 ARM', 'arm'), ('3 POSITION / HOLD', 'position'),
+                                  ('4 HUMAN CONFIRM', 'confirm'), ('5 START / 短窗口记录', 'start')):
+                self.button(label, lambda action=action:self.positioning_action(action),
+                    tag='positioning_'+action, enabled=True)
+        with dpg.group(horizontal=True):
+            self.button('CANCEL 确认 / 仍可能保持', lambda:self.positioning_action('cancel'))
+            self.button('STOP 实验 (非硬件急停)', lambda:self.positioning_action('stop'))
+        self.button('读取冻结短窗口 / 导出 .sraw (不停止电机)', self.positioning_export)
+        dpg.add_text('CANCEL 不释放力矩；STOP ACK 也不是物理停机证据。按 MCU 保持超时/停止阶段显示。', color=AMBER, wrap=730)
+        dpg.add_input_text(tag='positioning_state', multiline=True, readonly=True, width=-1, height=220)
+
+    def positioning_draft_changed(self):
+        if self.session:
+            self.session.positioning.draft_changed('JSON/axis/policy/Hardware gate draft edited; reload and PREPARE required')
+
+    def positioning_load(self):
+        session = self.require()
+        if session.assistance.active:
+            raise ValueError('先停止旧 Pitch assist；不能共享目标拥有权')
+        value = json.loads(dpg.get_value('positioning_json'))
+        if set(value) not in ({'recipe', 'policy'}, {'recipe', 'policy', 'capture'}):
+            raise ValueError('JSON requires recipe / policy and optional explicit capture settings')
+        if 'capture' in value:
+            session.positioning_capture.configure(value['capture'])
+        session.positioning.configure(value['recipe'], value['policy'],
+            hardware_blocked=dpg.get_value('positioning_blocked'))
+        self.message('实验草稿已校验；未发送，尚未人工确认')
+
+    def positioning_export(self):
+        session = self.require()
+        self.io('读取冻结短窗口并独占保存',
+            lambda: session.positioning_capture.finish().result(timeout=10),
+            lambda value: self.message('短窗口已保存；不是物理停止/安全批准: '+str(value)))
+
+    def positioning_action(self, action):
+        session = self.require()
+        if session.assistance.active:
+            raise ValueError('旧 Pitch assist 占用控制，请先停止')
+        getattr(session.positioning, action)()
 
     def build_assistance(self):
         dpg.add_text('Pitch · 手动调参保留在“参数草稿 / 读回”；本页不自动写入增益。', wrap=700)
@@ -250,7 +309,10 @@ class Console:
         for prefix, label, unit, series in (
             ('assist_position', '目标与角度', 'rad', [('assist_target', '采用目标'), ('assist_measured', '实测角度')]),
             ('assist_velocity', '角速度响应', 'rad/s', [('assist_speed', '实测角速度')]),
-            ('assist_torque', '固件叠加信号', 'N·m', [('assist_effort', '编码前馈力矩')])):
+            ('assist_torque', '指令与电调反馈力矩', 'N·m', [('assist_effort', '编码前馈力矩'),
+                                                        ('assist_reported_torque', '电调上报力矩')]),
+            ('assist_temperature', 'Pitch 电调温度', '°C', [('assist_mos_temperature', 'MOS 温度'),
+                                                        ('assist_rotor_temperature', '转子温度')])):
             with dpg.plot(label=label, height=190, width=-1):
                 dpg.add_plot_axis(dpg.mvXAxis, label='采样时间 [s]', tag=prefix + '_x')
                 axis = dpg.add_plot_axis(dpg.mvYAxis, label=unit, tag=prefix + '_y')
@@ -289,14 +351,19 @@ class Console:
 
     def assist_render_capture(self, view):
         fields = {'assist_target': 'pitch_adopted_rad', 'assist_measured': 'pitch_measured_rad',
-                  'assist_speed': 'pitch_measured_velocity_rad_s', 'assist_effort': 'pitch_feedforward_torque_nm'}
+                  'assist_speed': 'pitch_measured_velocity_rad_s', 'assist_effort': 'pitch_feedforward_torque_nm',
+                  'assist_reported_torque': 'pitch_reported_torque_nm',
+                  'assist_mos_temperature': 'pitch_mos_temperature_c',
+                  'assist_rotor_temperature': 'pitch_rotor_temperature_c'}
         for tag, field in fields.items():
             dpg.set_value(tag, [view['times'], view['series'][field]])
-        for prefix in ('assist_position', 'assist_velocity', 'assist_torque'):
+        for prefix in ('assist_position', 'assist_velocity', 'assist_torque', 'assist_temperature'):
             dpg.fit_axis_data(prefix + '_x'); dpg.fit_axis_data(prefix + '_y')
         dpg.set_value('assist_summary', f'来源：{view["source"]}；总记录 {view["records"]}；'
                       f'控制记录 {view["control_records"]}；序号缺口 {view["gaps"]}；最大 lost {view["lost_max"]}\n'
                       f'跟踪误差 RMS={view["rms_error_rad"]} rad，最大={view["max_error_rad"]} rad。'
+                      f'反馈对齐 {view["analysis"]["feedback_matched_records"]}/{view["control_records"]}；'
+                      f'分析状态 {view["analysis"]["status"]}。'
                       '这是响应统计，不是自动 PID 推荐。')
 
     def mechanism(self):
@@ -324,6 +391,8 @@ class Console:
         self.focus_changed()
 
     def focus_changed(self):
+        if self.session:
+            self.session.positioning.draft_changed('Observation axis/scope changed; fresh PREPARE required')
         self.fit_plots()
         self.focus = dpg.get_value('focus')
         dpg.configure_item('reference_controls', show=self.focus in PARTS['gimbal'])
@@ -549,6 +618,14 @@ class Console:
                 self.message(f'{label}: {error}',True)
                 if label=='连接 APP' and self.session is None:
                     for tag in ('link','part','port','connect'):dpg.configure_item(tag,enabled=True)
+        if self.session:
+            self.session.positioning.tick()
+            positioning = self.session.positioning.snapshot()
+            dpg.set_value('positioning_state', json.dumps(positioning, ensure_ascii=False, indent=2))
+            for action in ('prepare', 'arm', 'position', 'confirm', 'start'):
+                dpg.configure_item('positioning_'+action, enabled=not positioning['pending'] and
+                    not positioning['hardware_blocked'] and not positioning['draft_dirty'] and
+                    (action != 'start' or positioning['capture_available']))
         snapshot=self.session.peer.snapshot() if self.session else {'connected':False}
         assisting = self.session is not None and self.session.assistance.active
         for tag in ('manual_authorize', 'manual_submit', 'manual_align', 'assist_prepare'):
@@ -593,7 +670,7 @@ class Console:
                 try:self.poll.result()
                 except Exception as error:self.message('状态查询: '+str(error),True)
                 self.poll=None
-            if self.poll is None and now>=self.next_poll and not assisting:
+            if self.poll is None and now>=self.next_poll and not assisting and not self.session.positioning.active:
                 self.poll=self.session.peer.status(1);self.next_poll=now+.1
             fast=snapshot['status'].get(0)
             kind='物理设备配置' if snapshot.get('config_kind')==2 else '仿真/非部署配置'
@@ -653,7 +730,8 @@ class Console:
         for plot in ('tracking','error_plot'):dpg.configure_item(plot,height=height)
 
     def close(self):
-        self.stop()
+        try:self.stop()
+        except Exception as error:print('关闭前停止请求未确认:',error)
         if self.job:
             try:
                 value=self.job[1].result(timeout=8)

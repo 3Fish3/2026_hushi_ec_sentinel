@@ -91,6 +91,9 @@ public:
     [[nodiscard]] drivers::Dr16Switch selection() const noexcept { return selection_; }
     [[nodiscard]] std::uint32_t selection_edges() const noexcept { return selection_edges_; }
     [[nodiscard]] bool maintenance_holds() const noexcept { return maintenance_holds_; }
+    // 现场维护档 (左中/右上) 是否被选为"commissioning"通道: 激励实验的必要授权证据.
+    [[nodiscard]] bool maintenance_commissioning_selected() const noexcept {
+        return commissioning_maintenance_selected_; }
 
 private:
     StartupPolicy startup_policy_{StartupPolicy::remote_required};

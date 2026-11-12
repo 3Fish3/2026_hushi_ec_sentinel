@@ -13,8 +13,8 @@
 namespace ec::sentinel::board {
 
 inline constexpr ec::sentinel::app::PitchIdentificationPolicy trusted_pitch_identification_policy{
-    // 收进实车操作带[command_min=-0.132, command_max=+0.235], 激励目标也不得越出摩擦轮可用范围.
-    .min_rad = -0.132f,
+    // 与当前命令带[-0.268,+0.235]一致；位置振幅仍须给两侧及反馈误差留出余量.
+    .min_rad = -0.268f,
     .max_rad = 0.235f,
     .max_amplitude_nm = 0.05f,
     .max_expected_torque_nm = 3.0f,
@@ -26,6 +26,8 @@ inline constexpr ec::sentinel::app::PitchIdentificationPolicy trusted_pitch_iden
     .max_step_us = 3000u,
     .require_capture = true,
     .deployment_opt_in = true,
+    .max_position_amplitude_rad = 0.01f,
+    .max_position_speed_rad_s = 0.1f,
 };
 
 } // namespace ec::sentinel::board

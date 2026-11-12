@@ -14,6 +14,58 @@ constexpr std::size_t group_capacity = 8;
 // 撤输出期间 disable 重试的最小间隔 (ms): 有界退避, 不用"历史失败次数"永久阻断停止.
 constexpr std::uint32_t pitch_disable_retry_ms = 100;
 
+
+// 与 SentinelOscillationGuard::config_valid() 一致的只读校验镜像 (供 configure_guardian
+// 在真正下发前拒绝无效配置, 不降级既有保护).
+[[nodiscard]] bool guardian_limits_valid(const oscillation::GuardianLimits& l) noexcept {
+    using oscillation::Axis;
+    using oscillation::GuardMode;
+    const auto finite = [](float v) noexcept { return std::isfinite(v); };
+    if (l.mode == GuardMode::unconfigured) { return false; }
+    if (!finite(l.mechanical_min_rad) || !finite(l.mechanical_max_rad) || !finite(l.margin_rad)) { return false; }
+    if (!finite(l.max_speed_rad_s) || !finite(l.residual_deadband_rad) || !finite(l.residual_energy_budget) ||
+        !finite(l.reversal_count_budget) || !finite(l.window_ms) || !finite(l.exposure_budget) ||
+        !finite(l.decay_ratio) || !finite(l.growth_ratio) || !finite(l.suspect_exit_ms) || !finite(l.max_dt_s)) {
+        return false;
+    }
+    if (l.mode != GuardMode::observe_only && l.mode != GuardMode::synthetic_test && l.mode != GuardMode::approved) { return false; }
+    if (l.axis != Axis::fire_yaw && l.axis != Axis::pitch) { return false; }
+    if (!finite(l.energy_tau_s) || !finite(l.hazard_level_scale) || !finite(l.nominal_dt_s) || !finite(l.latch_budget)) { return false; }
+    if (l.has_mechanical_range && !(l.mechanical_min_rad < l.mechanical_max_rad)) { return false; }
+    if (l.margin_rad < 0.0f) { return false; }
+    if (l.has_mechanical_range &&
+        (l.mechanical_min_rad + l.margin_rad) >= (l.mechanical_max_rad - l.margin_rad)) { return false; }
+    if (l.max_dt_s <= 0.0f || l.window_ms <= 0.0f) { return false; }
+    if (l.energy_tau_s <= 0.0f || l.hazard_level_scale <= 0.0f) { return false; }
+    if (l.nominal_dt_s <= 0.0f) { return false; }
+    if (l.residual_deadband_rad < 0.0f) { return false; }
+    if (l.has_max_speed && !(l.max_speed_rad_s > 0.0f)) { return false; }
+    if (!(l.suspect_exit_ms > 0.0f)) { return false; }
+    if (l.nominal_dt_s > l.max_dt_s) { return false; }
+    if (!(l.residual_energy_budget > 0.0f) || !(l.reversal_count_budget > 0.0f) ||
+        !(l.exposure_budget > 0.0f) || !(l.latch_budget > 0.0f)) { return false; }
+    if (l.latch_budget < l.exposure_budget) { return false; }
+    if (!(l.decay_ratio > 0.0f && l.decay_ratio < 1.0f)) { return false; }
+    if (!(l.growth_ratio > 1.0f)) { return false; }
+    if (l.current_limit_a.present && !finite(l.current_limit_a.value)) { return false; }
+    if (l.temperature_limit_c.present && !finite(l.temperature_limit_c.value)) { return false; }
+    if (l.current_limit_a.present && !(l.current_limit_a.value > 0.0f)) { return false; }
+    if (l.temperature_limit_c.present && !(l.temperature_limit_c.value > -273.15f)) { return false; }
+    if (l.current_limit_a.required && !l.current_limit_a.present) { return false; }
+    if (l.temperature_limit_c.required && !l.temperature_limit_c.present) { return false; }
+    if (!finite(l.sample_rate_hz) || !finite(l.band_highpass_hz) || !finite(l.band_lowpass_hz)) { return false; }
+    if (!(l.sample_rate_hz > 0.0f)) { return false; }
+    if (!(l.band_highpass_hz > 0.0f)) { return false; }
+    if (!(l.band_lowpass_hz > l.band_highpass_hz)) { return false; }
+    if (!(l.band_lowpass_hz < l.sample_rate_hz * 0.5f)) { return false; }
+    if (l.mode == GuardMode::approved && !l.has_mechanical_range) { return false; }
+    // 任务书 §77: 任何配置都必须带非零 version 与 config_hash; approved 还必须带完整审批凭据.
+    if (l.version == 0) { return false; }
+    if (l.config_hash == 0) { return false; }
+    if (l.mode == GuardMode::approved && !l.has_provenance()) { return false; }
+    return true;
+}
+
 [[nodiscard]] CommandSource command_source_of(Source source) noexcept {
     switch (source) {
     case Source::remote: return CommandSource::remote;
@@ -464,6 +516,143 @@ FaultInputs SentinelExecutor::health(Tick now) noexcept {
     return health_;
 }
 
+
+bool SentinelExecutor::configure_guardian(Domain domain,
+    const oscillation::GuardianLimits& limits) noexcept {
+    // 本阶段守护对象只为 FireYaw 绑定; 其它域拒绝, 不产生跨轴错配.
+    if (domain != Domain::fire_yaw) { return false; }
+    if (limits.axis != oscillation::Axis::fire_yaw) { return false; }
+    // 部署受众绝不放行测试专用合成阈值; 只有离线测试允许 synthetic_test 模式.
+    if (report_.audience == ConfigAudience::deployment &&
+        limits.mode == oscillation::GuardMode::synthetic_test) { return false; }
+    // 先做只读有效性校验 (与算法 config_valid 一致). 无效则拒绝, 不降级既有保护.
+    if (!guardian_limits_valid(limits)) { return false; }
+    // 配置反回退: 低版本拒绝; 同版本须全字段一致才算幂等重申.
+    if (fire_guardian_configured_) {
+        if (limits.version < fire_guardian_limits_.version) { return false; }
+        if (limits.version == fire_guardian_limits_.version) {
+            if (!(limits == fire_guardian_limits_)) { return false; }
+            return true; // 幂等重申: 不重置采样时钟/预算/锁存.
+        }
+    }
+    fire_guardian_limits_ = limits;
+    fire_guardian_.configure(limits);
+    fire_guardian_configured_ = true;
+    fire_guardian_last_step_us_.reset();
+    return true;
+}
+
+oscillation::GuardianReport SentinelExecutor::guardian_report(Domain domain) const noexcept {
+    if (domain != Domain::fire_yaw) { return oscillation::GuardianReport{}; }
+    return fire_guardian_.status();
+}
+
+const oscillation::GuardianLimits& SentinelExecutor::guardian_limits(Domain domain) const noexcept {
+    static const oscillation::GuardianLimits dummy{};
+    if (domain != Domain::fire_yaw) { return dummy; }
+    return fire_guardian_limits_;
+}
+
+oscillation::GuardianSample SentinelExecutor::build_guardian_sample(const SentinelApp& app,
+    Tick now, MicroTick at, float dt_s, const std::optional<float>& output) const noexcept {
+    oscillation::GuardianSample sample{};
+    sample.axis = oscillation::Axis::fire_yaw;
+    sample.now_us = static_cast<std::uint32_t>(at.us);
+    sample.dt_s = dt_s;
+    sample.boot_identity_available = false; // 不伪造 boot 身份.
+    const auto& snapshot = app.snapshot();
+    const auto index = domain_index(Domain::fire_yaw);
+    const auto& execution = snapshot.executions[index];
+    sample.executing = execution.execute;
+    sample.authority_ok = snapshot.permission.authority;
+    sample.rc_valid = snapshot.input.remote_online;
+    sample.manual_stop = snapshot.permission.manual_stop;
+    sample.restart = execution.reason == Reason::restarted;
+    sample.authorization_id = app.authority().token() ? app.authority().token()->generation : 0;
+    const auto feedback = joint_feedback(Domain::fire_yaw, now);
+    const bool pos_valid = feedback.position_rad.validity == Validity::valid;
+    const bool vel_valid = feedback.velocity_rad_s.validity == Validity::valid;
+    sample.feedback_valid = pos_valid && vel_valid;
+    sample.angle_rad = pos_valid ? feedback.position_rad.value : 0.0f;
+    sample.velocity_rad_s = vel_valid ? feedback.velocity_rad_s.value : 0.0f;
+    if (const auto target = app.target(Domain::fire_yaw)) {
+        sample.target_valid = true;
+        sample.request_target_rad = target->value;
+        sample.target_revision = static_cast<std::uint32_t>(target->accepted_at.ms);
+    }
+    if (execution.adopted_target) {
+        sample.target_adopted = true;
+        sample.adopted_target_rad = *execution.adopted_target;
+    }
+    // Fire 本拍新输出 (PID tick 之后) 才可见; 无输出时保持未观测.
+    if (output) {
+        sample.has_output = true;
+        sample.output_normalized = *output;
+    }
+    sample.report_stop_transport = false;
+    sample.stop_tx_state = oscillation::StopTxState::unknown;
+    return sample;
+}
+
+excitation::Guards SentinelExecutor::experiment_guards(Domain domain, Tick now) const noexcept {
+    excitation::Guards g{};
+    const float missing = std::numeric_limits<float>::quiet_NaN();
+    g.actual_position_rad = missing;
+    g.actual_velocity_rad_s = missing;
+    g.observed_output = missing;
+    g.param_epoch = param_epoch_; // Truthful observation, never hardware guardian approval.
+    if (!assembled_ || (domain != Domain::fire_yaw && domain != Domain::pitch)) { return g; }
+    const auto at = clock_ ? clock_() : MicroTick{now.ms * 1000u};
+    g.backpressure_ok = pitch_recorder_ && pitch_recorder_->autotune_ready(
+        static_cast<std::uint8_t>(domain), at);
+    g.capture_sample_us = at.us;
+    g.capture_remaining_us = pitch_recorder_ ? pitch_recorder_->autotune_remaining_us(
+        static_cast<std::uint8_t>(domain), at) : 0;
+    const auto i = domain_index(domain);
+    const auto fb = joint_feedback(domain, now);
+    const bool pos = fb.position_rad.validity == Validity::valid && std::isfinite(fb.position_rad.value);
+    const bool vel = fb.velocity_rad_s.validity == Validity::valid && std::isfinite(fb.velocity_rad_s.value);
+    g.feedback_fresh = pos && vel && feedback_times_[i].has_value();
+    if (pos) { g.actual_position_rad = fb.position_rad.value; }
+    if (vel) { g.actual_velocity_rad_s = fb.velocity_rad_s.value; }
+    // 接收时刻而非设备采样时钟: 设备不提供源测量时钟.
+    if (feedback_times_[i]) { g.feedback_sample_us = feedback_times_[i]->us; }
+    g.reference_valid = references_[i].valid && pos;
+    g.actuator_healthy = g.feedback_fresh && !health_.feedback_lost[i] &&
+        !health_.device_fault[i] && !health_.device_restarted[i] && !rejected_[i] && !unreachable_[i];
+    // 仅反映执行器上一次的意图; 周期层还必须叠加本周期的应用目标/执行事实.
+    g.other_axes_idle = stats_.cycles != 0;
+    for (std::size_t j = 0; j < domain_count; ++j) {
+        if (j == i) { continue; }
+        if (was_executing_[j] || (axes_[j] && axes_[j]->enabled())) { g.other_axes_idle = false; }
+    }
+    if (domain != Domain::pitch && config_.dm[0].installed) {
+        g.other_axes_idle = g.other_axes_idle && dm_devices_[0] &&
+            dm_devices_[0]->online(now) && !dm_devices_[0]->faulted(now) && !dm_devices_[0]->enabled(now);
+    }
+    if (domain == Domain::fire_yaw && runtime_[i]) {
+        const auto& group = groups_[runtime_[i]->group];
+        const auto& out = accepted_outputs_[runtime_[i]->dji_slot];
+        const bool fresh = out.has_value() && group.timing.output_ttl.valid() &&
+            micro_fresh(at, out->computed_at, group.timing.output_ttl);
+        g.output_observation_valid = fresh;
+        if (fresh) { g.observed_output = out->normalized; }
+        // Computed zero alone is not stop evidence. Require this step's zero bytes
+        // to have been accepted by local transport; physical delivery remains unproven.
+        const bool accepted_zero = out && out->encoded[0] == 0 && out->encoded[1] == 0;
+        g.stop_policy_executed = fresh && accepted_zero && g.observed_output == 0.0f &&
+            !was_executing_[i] && (!axes_[i] || !axes_[i]->enabled());
+        if (g.stop_policy_executed) { g.stop_policy_sample_us = out->computed_at.us; }
+    } else if (domain == Domain::pitch && dm_devices_[0]) {
+        const auto& device = *dm_devices_[0];
+        g.actuator_healthy = g.actuator_healthy && !device.faulted(now);
+        g.stop_policy_executed = !was_executing_[i] && device.online(now) &&
+            !device.faulted(now) && !device.enabled(now);
+        // MIT 请求的位置/增益不能建立实际归一化输出或力矩.
+    }
+    return g;
+}
+
 float SentinelExecutor::velocity_gain(std::size_t dji_slot, int which) const noexcept {
     if (dji_slot >= dji_slot_count || !config_.dji[dji_slot].installed) { return 0.0f; }
     const auto index = domain_index(config_.dji[dji_slot].domain);
@@ -513,7 +702,7 @@ std::optional<recording::Record> SentinelExecutor::trace(Domain domain, Tick now
             pitch_stats_.computations, pitch_stats_.last_computed.us, recorded_at.us,
             pitch_stats_.tx_failed, pitch_last_mit_submitted_at_ ? 0u : 0xffffffffu, pitch_identification_.run_id()};
         const float feedforward = pitch_last_encoded_feedforward_nm_.value_or(missing);
-        const std::array values{target ? target->value : missing, execution.adopted_target.value_or(missing),
+        const std::array values{target ? target->value : missing, pitch_last_reference_rad_.value_or(execution.adopted_target.value_or(missing)),
             feedback.position_rad.value, feedback.velocity_rad_s.value, feedforward, pitch_step_.dt_s};
         for (std::size_t n = 0; n < values.size(); ++n) { r.data[n] = std::bit_cast<std::uint32_t>(values[n]); }
         const bool limited = false;
@@ -555,6 +744,216 @@ std::optional<recording::Record> SentinelExecutor::trace(Domain domain, Tick now
     return r;
 }
 
+void SentinelExecutor::observe_param_epoch() noexcept {
+    // 纯观测: 精确读取 Fire 生效增益 (速度 kp/ki/kd 与位置 kp/ki/kd) + Pitch mit_kp/kd.
+    // 无解析/无阈值, 位相等比较; 只写本对象 epoch, 不触碰任何 setter/控制状态.
+    std::array<float, 6> fire{
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f};
+    if (const auto slot = dji_slot_for(Domain::fire_yaw)) {
+        fire[0] = velocity_gain(*slot, 0); fire[1] = velocity_gain(*slot, 1); fire[2] = velocity_gain(*slot, 2);
+    }
+    if (runtime_[domain_index(Domain::fire_yaw)] && axes_[domain_index(Domain::fire_yaw)]) {
+        const auto pos = axes_[domain_index(Domain::fire_yaw)]->position_pid();
+        fire[3] = pos.kp; fire[4] = pos.ki; fire[5] = pos.kd;
+    }
+    std::array<float, 2> pitch{ config_.dm[0].installed ? dm_mit_kp() : 0.0f,
+        config_.dm[0].installed ? dm_mit_kd() : 0.0f };
+    bool changed = !param_epoch_seeded_;
+    if (param_epoch_seeded_) {
+        for (std::size_t i = 0; i < fire.size(); ++i) {
+            changed = changed || std::bit_cast<std::uint32_t>(fire[i]) != std::bit_cast<std::uint32_t>(fire_gain_tuple_[i]);
+        }
+        for (std::size_t i = 0; i < pitch.size(); ++i) {
+            changed = changed || std::bit_cast<std::uint32_t>(pitch[i]) != std::bit_cast<std::uint32_t>(pitch_gain_tuple_[i]);
+        }
+    }
+    if (changed) {
+        if (param_epoch_ == 0xffffffffu) { param_epoch_ = 0; } // 完整 u32 回绕, 不截断
+        ++param_epoch_;
+        fire_gain_tuple_ = fire;
+        pitch_gain_tuple_ = pitch;
+        param_epoch_seeded_ = true;
+    }
+}
+
+std::optional<AutotuneBundle> SentinelExecutor::autotune_trace(
+    Domain domain, Tick now, const SentinelApp& app) const noexcept {
+    const auto i = domain_index(domain);
+    const auto& snapshot = app.snapshot();
+    if (domain != Domain::fire_yaw && domain != Domain::pitch) { return std::nullopt; }
+    // 只在本 step 真实计算该轴时返回 bundle: 否则 board 每 fastcycle 调用会重复写旧 sample.
+    // fire: 组 step.due; pitch: pitch_computed_this_step_ (纯观测).
+    if (domain == Domain::fire_yaw) {
+        if (!runtime_[i] || !groups_[runtime_[i]->group].step.due) { return std::nullopt; }
+    } else {
+        if (!pitch_computed_this_step_) { return std::nullopt; }
+    }
+    const std::uint8_t axis = static_cast<std::uint8_t>(i);
+    const float missing = std::numeric_limits<float>::quiet_NaN();
+    const auto as_f32 = [&](std::optional<float> v) -> std::uint32_t {
+        return std::bit_cast<std::uint32_t>(v.value_or(missing));
+    };
+    AutotuneBundle out{};
+    out.state.kind = recording::Kind::autotune_state;
+    out.state.stream = axis;
+    out.state.flags = 1;
+    out.aux.kind = recording::Kind::autotune_aux;
+    out.aux.stream = axis;
+    out.aux.flags = 1;
+
+    // 计算/提交时刻: state.sampled_us = 本周期真实计算时刻(微秒), 来自组/统计的 last_computed;
+    // state.arrived_us = 观测(commit)时刻, 有 clock_() 用真实微秒, 否则量化 now.ms*1000 并标 error_us.
+    std::uint32_t sampled_us = now.ms * 1000u;
+    if (domain == Domain::fire_yaw && runtime_[i]) { sampled_us = groups_[runtime_[i]->group].stats.last_computed.us; }
+    else if (domain == Domain::pitch) { sampled_us = pitch_stats_.last_computed.us; }
+    out.state.sampled_us = sampled_us;
+    std::uint32_t arrived_us = now.ms * 1000u;
+    std::uint32_t timing_error_us = 1000u;
+    if (clock_) { arrived_us = clock_().us; timing_error_us = 0u; }
+    out.state.arrived_us = arrived_us;
+    out.state.error_us = timing_error_us;
+    // source_sequence: 执行器本周期计算计数 (fire=组computations, pitch=pitch_stats_.computations).
+    // 用于配对, state 与 aux 必须一致.
+    std::uint32_t source_seq = 0;
+    if (domain == Domain::fire_yaw && runtime_[i]) { source_seq = groups_[runtime_[i]->group].stats.computations; }
+    else if (domain == Domain::pitch) { source_seq = pitch_stats_.computations; }
+    out.state.source_sequence = source_seq;
+    out.aux.source_sequence = source_seq;
+
+    const auto feedback = joint_feedback(domain, now);
+    const auto target = app.target(domain);
+    const auto& execution = snapshot.executions[i];
+
+    std::uint32_t flags = 0;
+    if (target) { flags |= 1u << 0; }
+    if (execution.adopted_target) { flags |= 1u << 1; }
+    if (feedback.position_rad.validity == Validity::valid) { flags |= 1u << 2; }
+    if (feedback.velocity_rad_s.validity == Validity::valid) { flags |= 1u << 3; }
+    flags |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(execution.mode) & 0x03u) << 8;
+    flags |= (static_cast<std::uint32_t>(feedback.position_rad.validity) & 0x03u) << 16;
+    flags |= (static_cast<std::uint32_t>(feedback.velocity_rad_s.validity) & 0x03u) << 20;
+    // 真实安全/来源状态: rc_valid 取 snapshot.input.remote_online 真值(bit24, 非未知伪造);
+    // manual_stop(bit25)/executing(bit26).
+    if (snapshot.input.remote_online) { flags |= 1u << 24; }
+    if (snapshot.permission.manual_stop) { flags |= 1u << 25; }
+    if (execution.execute) { flags |= 1u << 26; }
+    // fault_mask: 位0 rejected, 1 unreachable, 2 feedback_lost, 3 reference_lost, 4 device_fault, 5 device_restarted.
+    std::uint32_t fault_mask = 0;
+    if (rejected_[i]) { fault_mask |= 1u << 0; }
+    if (unreachable_[i]) { fault_mask |= 1u << 1; }
+    if (health_.feedback_lost[i]) { fault_mask |= 1u << 2; }
+    if (health_.reference_lost[i]) { fault_mask |= 1u << 3; }
+    if (health_.device_fault[i]) { fault_mask |= 1u << 4; }
+    if (health_.device_restarted[i]) { fault_mask |= 1u << 5; }
+    flags |= (fault_mask & 0x3fu) << 10;
+    if (fault_mask) { flags |= 1u << 27; }
+    // target_source: 真实来源 (permission.source), 4bit, 绝不从 mode 推断.
+    flags |= (static_cast<std::uint32_t>(snapshot.permission.source) & 0x0fu) << 28;
+
+    std::optional<float> output_normalized{};
+    if (domain == Domain::fire_yaw) {
+        if (runtime_[i]) { output_normalized = outputs_[runtime_[i]->dji_slot].has_value() ? std::optional<float>(outputs_[runtime_[i]->dji_slot]->normalized) : std::nullopt; }
+    }
+    // pitch 的归一化输出不可直接由 MIT 命令给出, 保持 unknown (不伪造).
+    if (output_normalized) { flags |= 1u << 4; }
+    // timing_error: 本周期真实时间异常. fire: 组 step.invalid_time 或 bad_dt; pitch: 上一步保存的本周期
+    // scheduled.invalid_time||bad_dt (纯观测). 仅在组本周期真正计算(而非未 due 复报旧帧)时可信.
+    const bool fire_timing_error = (domain == Domain::fire_yaw && runtime_[i])
+        ? (groups_[runtime_[i]->group].step.invalid_time || !(groups_[runtime_[i]->group].step.dt_s > 0.0f))
+        : false;
+    const bool timing_error = (domain == Domain::pitch) ? pitch_last_timing_error_ : fire_timing_error;
+    if (timing_error) { flags |= 1u << 7; }
+    // axis_enabled: fire 用轴使能; pitch 用 enable_confirmed.
+    bool axis_enabled = false;
+    if (domain == Domain::fire_yaw && axes_[i]) { axis_enabled = axes_[i]->enabled(); }
+    if (domain == Domain::pitch) { axis_enabled = pitch_enable_confirmed_; }
+    if (axis_enabled) { flags |= 1u << 5; }
+    // feedback_valid: position AND velocity 同时新鲜 (非 OR).
+    const bool pos_fresh = feedback.position_rad.validity == Validity::valid;
+    const bool vel_fresh = feedback.velocity_rad_s.validity == Validity::valid;
+    if (pos_fresh && vel_fresh) {
+        flags |= 1u << 6;
+    }
+    out.state.data[0] = flags;
+    out.state.data[1] = target ? std::bit_cast<std::uint32_t>(target->value) : std::bit_cast<std::uint32_t>(missing);
+    out.state.data[2] = as_f32(execution.adopted_target);
+    if (domain == Domain::pitch && pitch_last_reference_rad_) {
+        out.state.data[2] = std::bit_cast<std::uint32_t>(*pitch_last_reference_rad_);
+    }
+    out.state.data[3] = feedback.position_rad.validity == Validity::valid ? std::bit_cast<std::uint32_t>(feedback.position_rad.value) : std::bit_cast<std::uint32_t>(missing);
+    out.state.data[4] = feedback.velocity_rad_s.validity == Validity::valid ? std::bit_cast<std::uint32_t>(feedback.velocity_rad_s.value) : std::bit_cast<std::uint32_t>(missing);
+    out.state.data[5] = output_normalized ? std::bit_cast<std::uint32_t>(*output_normalized) : std::bit_cast<std::uint32_t>(missing);
+    float dt_s = missing;
+    if (domain == Domain::fire_yaw && runtime_[i]) { dt_s = groups_[runtime_[i]->group].step.dt_s; }
+    else if (domain == Domain::pitch) { dt_s = pitch_stats_.last_dt_s; }
+    out.state.data[6] = std::bit_cast<std::uint32_t>(dt_s);
+    out.state.data[7] = param_epoch_;
+
+    // ---- aux ----
+    std::uint8_t frame_kind = 0, provenance = 0;
+    transport::CanFrame frame{};
+    bool have_frame = false;
+    if (domain == Domain::pitch) {
+        if (pitch_last_frame_) { frame = *pitch_last_frame_; have_frame = true; provenance = 1; frame_kind = pitch_last_frame_kind_; }
+    } else {
+        if (runtime_[i]) {
+            if (const auto f = last_group_frames_[runtime_[i]->group]) { frame = *f; have_frame = true; provenance = 2; frame_kind = 5; }
+        }
+    }
+    out.aux.data[0] = (have_frame ? (static_cast<std::uint32_t>(frame.id) & 0xffffu) : 0u) | (static_cast<std::uint32_t>(provenance) << 16);
+    out.aux.data[1] = (have_frame ? static_cast<std::uint32_t>(frame.size) : 0u) | (static_cast<std::uint32_t>(frame_kind) << 8);
+    std::uint32_t lo = 0, hi = 0;
+    for (std::size_t n = 0; n < 4; ++n) { lo |= static_cast<std::uint32_t>(frame.data[n]) << (n * 8); }
+    for (std::size_t n = 0; n < 4; ++n) { hi |= static_cast<std::uint32_t>(frame.data[4 + n]) << (n * 8); }
+    out.aux.data[2] = lo;
+    out.aux.data[3] = hi;
+    std::uint32_t transport = 0, dm_state = 0xffu;
+    bool fb_valid = false;
+    float reported_torque_nm = missing;
+    if (domain == Domain::fire_yaw && runtime_[i]) {
+        transport = static_cast<std::uint32_t>(groups_[runtime_[i]->group].stats.last_result);
+        fb_valid = feedback.position_rad.validity == Validity::valid && feedback.velocity_rad_s.validity == Validity::valid;
+    } else if (domain == Domain::pitch) {
+        transport = static_cast<std::uint32_t>(pitch_stats_.last_result);
+        // dm_state 用 joint_feedback 的当前 TTL 新鲜度判定, 而非 raw state().validity.
+        const bool dm_fresh = feedback.position_rad.validity == Validity::valid && feedback.velocity_rad_s.validity == Validity::valid;
+        if (dm_fresh && dm_devices_[0]) {
+            const auto st = dm_devices_[0]->state();
+            if (st.feedback.validity == Validity::valid) {
+                dm_state = static_cast<std::uint32_t>(static_cast<std::uint8_t>(st.feedback.value.status));
+                // 电调按配置 MIT 量程上报的力矩；不是前馈指令或独立传感器测量。
+                if (std::isfinite(st.feedback.value.torque_nm) && feedback_times_[i]) {
+                    const auto age_us = sampled_us - feedback_times_[i]->us;
+                    if (age_us < config_.dm[0].feedback_ttl.ms * 1000u) {
+                        reported_torque_nm = st.feedback.value.torque_nm;
+                    }
+                }
+            }
+        }
+        fb_valid = dm_fresh;
+    }
+    out.aux.data[4] = (transport & 0xffu) | ((dm_state & 0xffu) << 8) | (fb_valid ? (1u << 16) : 0u) | (timing_error ? (1u << 17) : 0u);
+    // 环路项: fire 用当前模式诊断 p/i/d; pitch 用 mit_kp/kd/新鲜电调上报力矩。
+    if (domain == Domain::fire_yaw && runtime_[i] && axes_[i]) {
+        const auto& d = axes_[i]->velocity_diagnostics();
+        out.aux.data[5] = d.valid ? std::bit_cast<std::uint32_t>(d.p) : std::bit_cast<std::uint32_t>(missing);
+        out.aux.data[6] = d.valid ? std::bit_cast<std::uint32_t>(d.i) : std::bit_cast<std::uint32_t>(missing);
+        out.aux.data[7] = d.valid ? std::bit_cast<std::uint32_t>(d.d) : std::bit_cast<std::uint32_t>(missing);
+    } else {
+        out.aux.data[5] = std::bit_cast<std::uint32_t>(dm_mit_kp());
+        out.aux.data[6] = std::bit_cast<std::uint32_t>(dm_mit_kd());
+        out.aux.data[7] = std::bit_cast<std::uint32_t>(reported_torque_nm);
+    }
+    // 反馈时间: 若存在 route 到达时刻则 aux.arrived_us 标 feedback_received_us; measurement 未知.
+    if (const auto t = feedback_times_[i]) { out.aux.arrived_us = t->us; } else { out.aux.arrived_us = 0u; }
+    // source_sequence/sampled_us 由调用方填充: state 与 aux 必须一致 (配对键).
+    out.aux.source_sequence = out.state.source_sequence;
+    out.aux.sampled_us = out.state.sampled_us;
+    out.aux.run = out.state.run;
+    return out;
+}
+
 void SentinelExecutor::send_groups(Tick now) noexcept {
     for (std::size_t g = 0; g < group_count_; ++g) {
         auto& group = groups_[g];
@@ -562,10 +961,19 @@ void SentinelExecutor::send_groups(Tick now) noexcept {
         if (group.stats.stop_only) {
             // 构造时已经核对所有真实槽与地址, 本组所有槽只能执行 A08 零输出, 不合并半成品请求.
             const auto result = bus_for(group.bus).try_send(*group.zero_frame);
+            last_group_frames_[g] = group.zero_frame;
             if (result == transport::SendResult::accepted) {
                 ++stats_.group_sent; ++group.stats.submitted;
                 group.stats.last_result = drivers::DjiGroupStatus::accepted;
                 if (clock_) { group.stats.last_submitted = clock_(); }
+                // Truthful stop-only evidence: cache the accepted zero bytes with the real
+                // local submit time. Physical delivery to the ESC remains unproven here.
+                for (const auto slot : group.indices) {
+                    if (!slot) { continue; }
+                    accepted_outputs_[*slot] = AcceptedDjiOutput{
+                        0.0f, {std::uint8_t{0}, std::uint8_t{0}},
+                        clock_ ? clock_() : MicroTick{now.ms * 1000u}};
+                }
             } else {
                 ++stats_.group_tx_error; ++group.stats.tx_failed;
                 group.stats.last_result = result == transport::SendResult::busy ? drivers::DjiGroupStatus::busy : drivers::DjiGroupStatus::error;
@@ -588,6 +996,33 @@ void SentinelExecutor::send_groups(Tick now) noexcept {
         }
         const auto result = group.sender->send(now, slots);
         group.stats.last_result = result.status;
+        // Reconstruct codec bytes only if the real sender attempted transport, never on refusal.
+        if (result.tx_result) {
+            std::optional<drivers::DjiMode> mode{};
+            std::array<std::int16_t, 4> raw{};
+            for (std::size_t s = 0; s < group.indices.size(); ++s) {
+                if (!group.indices[s]) { continue; }
+                const auto slot = *group.indices[s];
+                mode = config_.dji[slot].mode;
+                if (slots[s]) {
+                    if (const auto encoded = dji_devices_[slot]->encode_output(slots[s]->normalized)) { raw[s] = *encoded; }
+                }
+            }
+            if (mode) { last_group_frames_[g] = drivers::encode_dji(*mode, group.group, raw); }
+            // Cache only what the local transport actually accepted. Original computed
+            // timestamp is preserved; busy/error/refused never overwrite a prior sample.
+            if (result.status == drivers::DjiGroupStatus::accepted) {
+                for (std::size_t s = 0; s < group.indices.size(); ++s) {
+                    if (!group.indices[s] || !slots[s]) { continue; }
+                    const auto slot = *group.indices[s];
+                    const auto v = raw[s];
+                    accepted_outputs_[slot] = AcceptedDjiOutput{
+                        slots[s]->normalized,
+                        {static_cast<std::uint8_t>(v & 0xff), static_cast<std::uint8_t>((v >> 8) & 0xff)},
+                        group.stats.last_computed};
+                }
+            }
+        }
         switch (result.status) {
         case drivers::DjiGroupStatus::accepted:
             ++stats_.group_sent; ++group.stats.submitted;
@@ -621,6 +1056,7 @@ PitchIdentificationEvidence SentinelExecutor::pitch_identification_evidence(
     e.config_epoch = app.config_epoch(); e.reference_epoch = app.reference_epoch();
     e.target_rad = target ? target->value : std::numeric_limits<float>::quiet_NaN();
     e.kp = dm_mit_kp(); e.kd = dm_mit_kd();
+    e.gravity_ff_nm = config_.dm[0].gravity_ff_nm.value_or(0.0f);
     e.native_target_rad = e.target_rad + config_.joints[joint_index(Domain::pitch)].zero_offset_rad.value_or(0.0f);
     const auto feedback = joint_feedback(Domain::pitch, now);
     e.position_rad = feedback.position_rad.value; e.velocity_rad_s = feedback.velocity_rad_s.value;
@@ -639,7 +1075,7 @@ PitchIdentificationEvidence SentinelExecutor::pitch_identification_evidence(
         const auto d = drivers::dm_encode_kd(e.kd);
         const auto v = drivers::dm_encode_velocity(e.limits, 0.0f);
         e.feedback_valid = e.feedback_valid && p && k && d && v;
-        e.native_target_rad = p ? drivers::dm_decode_position(e.limits, *p).value_or(0.0f) : 0.0f;
+        // Preserve the exact native centre; the waveform target is encoded once in tick().
         e.encoded_kp = k ? drivers::dm_decode_kp(*k).value_or(0.0f) : 0.0f;
         e.encoded_kd = d ? drivers::dm_decode_kd(*d).value_or(0.0f) : 0.0f;
         e.encoded_velocity = v ? drivers::dm_decode_velocity(e.limits, *v).value_or(0.0f) : 0.0f;
@@ -654,6 +1090,10 @@ bool SentinelExecutor::start_pitch_identification(PitchIdentificationRecipe reci
     const auto at = clock_ ? clock_() : MicroTick{now.ms*1000u};
     const auto& joint = config_.joints[joint_index(Domain::pitch)];
     const auto& policy = *config_.pitch_identification;
+    const auto centre = app.target(Domain::pitch);
+    if (recipe.position_mode() && (!centre ||
+        centre->value - recipe.position_amplitude_rad <= joint.command_min_rad.value_or(policy.min_rad) ||
+        centre->value + recipe.position_amplitude_rad >= joint.command_max_rad.value_or(policy.max_rad))) { return false; }
     if (!joint.min_rad || !joint.max_rad || policy.min_rad < *joint.min_rad ||
         policy.max_rad > *joint.max_rad || !config_.dm[0].limits ||
         policy.max_expected_torque_nm > config_.dm[0].limits->torque_max_nm) { return false; }
@@ -700,8 +1140,11 @@ DjiIdentificationEvidence SentinelExecutor::dji_identification_evidence(
     e.executing = execution.execute && target && target->mode == control::ControlMode::position &&
         fresh(now, target->accepted_at, target->ttl);
     e.isolated = true;
+    // 2026-11-03: fire_yaw/main_yaw 电流辨识期间允许 Pitch 保持水平; 不同轴不参与被测轴响应,
+    // 其余任何域执行仍判为不隔离 (避免同组/同轴耦合污染辨识).
     for (std::size_t i = 0; i < domain_count; ++i) {
-        if (i != domain_index(domain) && app.snapshot().executions[i].execute) { e.isolated = false; }
+        if (i != domain_index(domain) && i != domain_index(Domain::pitch) &&
+            app.snapshot().executions[i].execute) { e.isolated = false; }
     }
     e.config_epoch = app.config_epoch(); e.reference_epoch = app.reference_epoch();
     e.target_rad = target ? target->value : std::numeric_limits<float>::quiet_NaN();
@@ -737,8 +1180,9 @@ bool SentinelExecutor::start_dji_identification(std::size_t slot, DjiIdentificat
     const auto domain = slotcfg.domain;
     const auto& joint = config_.joints[joint_index(domain)];
     const auto& policy = *config_.dji_identification[slot];
-    if (!joint.min_rad || !joint.max_rad || policy.min_rad < *joint.min_rad ||
-        policy.max_rad > *joint.max_rad) { return false; }
+    // 连续轴(main_yaw)没有机械 min/max: 用 policy 自己的包络约束, 其余越界由 check() 每周期执行.
+    if ((joint.min_rad && policy.min_rad < *joint.min_rad) ||
+        (joint.max_rad && policy.max_rad > *joint.max_rad)) { return false; }
     if (policy.require_capture) {
         if (pitch_recorder_ == nullptr || !pitch_recorder_->pitch_stream_ready(
             recipe.run_id, recipe.duration_us() + 2000u, at)) { return false; }
@@ -768,6 +1212,13 @@ bool SentinelExecutor::reset_dji_identification(std::size_t slot, Tick now, cons
 }
 
 bool SentinelExecutor::send_pitch_frame(const transport::CanFrame& frame) noexcept {
+    pitch_last_frame_ = frame; // Exact attempted bytes, including rejected transport submissions.
+    pitch_last_frame_kind_ = frame.id == 0x7ff ? 4 : 1;
+    if (frame.size == 8 && std::all_of(frame.data.begin(), frame.data.begin() + 7,
+        [](std::uint8_t byte) { return byte == 0xff; })) {
+        if (frame.data[7] == 0xfc) { pitch_last_frame_kind_ = 2; }
+        if (frame.data[7] == 0xfd) { pitch_last_frame_kind_ = 3; }
+    }
     const auto result = bus_for(config_.dm[0].bus).try_send(frame);
     const bool accepted = result == transport::SendResult::accepted;
     pitch_stats_.last_result = accepted ? drivers::DjiGroupStatus::accepted :
@@ -886,7 +1337,9 @@ void SentinelExecutor::step_pitch(Tick now, const SentinelApp& app, bool force_s
     const float gravity_ff = config_.dm[0].gravity_ff_nm.value_or(0.0f);
     const float excitation_nm = pitch_identification_.active() ? pitch_identification_.requested_nm() : 0.0f;
     const float ff_nm = gravity_ff + excitation_nm;
-    const auto command = drivers::DmMitCommand{target->value + joint.zero_offset_rad.value_or(0.0f),
+    const float position_reference = target->value + pitch_identification_.position_offset_rad();
+    pitch_last_reference_rad_ = position_reference;
+    const auto command = drivers::DmMitCommand{position_reference + joint.zero_offset_rad.value_or(0.0f),
         0.0f, config_.dm[0].mit_kp.value_or(0.0f), config_.dm[0].mit_kd.value_or(0.0f), ff_nm};
     const auto frame = device.encode_mit(command);
     // 真编码拒绝回灌既有域失效入口; 反馈恢复不再自动重试同一份旧意图.
@@ -915,6 +1368,7 @@ void SentinelExecutor::step_pitch(Tick now, const SentinelApp& app, bool force_s
         pitch_last_mit_submitted_at_ = pitch_stats_.last_submitted;
         ++stats_.dm_command_sent;
         pitch_last_mit_status_ = drivers::DjiGroupStatus::accepted;
+        pitch_identification_.confirm_position_submission(true);
     } else {
         ++stats_.dm_tx_error;
         pitch_last_mit_status_ = pitch_stats_.last_result;
@@ -928,6 +1382,12 @@ void SentinelExecutor::step_pitch(Tick now, const SentinelApp& app, bool force_s
 void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
     std::optional<MicroTick> now_us) noexcept {
     ++stats_.cycles;
+    observe_param_epoch();
+    pitch_computed_this_step_ = false;
+    pitch_last_timing_error_ = false;
+    pitch_last_frame_.reset();
+    pitch_last_reference_rad_.reset();
+    last_group_frames_.fill(std::nullopt);
     unreachable_.fill(false);
     rejected_.fill(false);
     outputs_.fill(std::nullopt);
@@ -950,7 +1410,8 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
     // DJI 电流方波辨识: 采集门槛先于波形推进; 每槽独立, 失败即锁存并撤该轴输出.
     for (std::size_t slot = 0; slot < dji_slot_count; ++slot) {
         if (!dji_identification_[slot] || !dji_identification_[slot]->active()) { continue; }
-        if (!dji_capture_healthy(dji_identification_run_[slot], at)) {
+        const bool needs_capture = dji_identification_[slot]->policy().require_capture;
+        if (needs_capture && !dji_capture_healthy(dji_identification_run_[slot], at)) {
             dji_identification_[slot]->trip(DjiIdentificationFault::capture);
         } else if (!std::isfinite(dt_s) || dt_s <= 0.0f) {
             dji_identification_[slot]->trip(DjiIdentificationFault::timing);
@@ -1149,6 +1610,40 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
         stats_.control_last_us = tx_start.us - control_start.us;
         stats_.control_max_us = std::max(stats_.control_max_us, stats_.control_last_us);
     }
+
+    // Fire 后置硬守护: 在本拍新输出已计算之后、唯一 send_groups 之前, 用本拍新输出喂
+    // 守护一次. 命中抑制则只归零 Fire 本槽并 disable, 不牵连同组其它轴. 只在执行中或
+    // 已锁存/抑制时 step, 避免无目标闲置拍被误判 hard_authority 而锁存.
+    {
+        const auto fire = domain_index(Domain::fire_yaw);
+        if (fire_guardian_configured_ && runtime_[fire]) {
+            const auto& exec_fire = app.snapshot().executions[fire];
+            const bool latched = fire_guardian_.status().latched || fire_guardian_.status().inhibit();
+            if (exec_fire.execute || latched) {
+                const std::uint32_t now_us32 = static_cast<std::uint32_t>(at.us);
+                if (!fire_guardian_last_step_us_ || *fire_guardian_last_step_us_ != now_us32) {
+                    float dt_guard;
+                    if (!std::isfinite(dt_s) || dt_s <= 0.0f) {
+                        dt_guard = std::numeric_limits<float>::quiet_NaN();
+                    } else if (fire_guardian_last_step_us_) {
+                        dt_guard = static_cast<float>(now_us32 - *fire_guardian_last_step_us_) * 1e-6f;
+                    } else {
+                        dt_guard = fire_guardian_limits_.nominal_dt_s;
+                    }
+                    fire_guardian_last_step_us_ = now_us32;
+                    std::optional<float> new_out{};
+                    const auto slot = runtime_[fire]->dji_slot;
+                    if (outputs_[slot]) { new_out = outputs_[slot]->normalized; }
+                    const auto sample = build_guardian_sample(app, now, at, dt_guard, new_out);
+                    const auto report = fire_guardian_.step(sample);
+                    if (report.inhibit()) {
+                        if (axes_[fire]) { axes_[fire]->disable(); }
+                        outputs_[slot] = drivers::DjiOutput{0.0f, now}; // 仅本槽归零
+                    }
+                }
+            }
+        }
+    }
     send_groups(now);
     const auto pitch = domain_index(Domain::pitch);
     const bool stop_pitch = was_executing_[pitch] && !app.snapshot().executions[pitch].execute;
@@ -1159,6 +1654,8 @@ void SentinelExecutor::step(Tick now, float dt_s, const SentinelApp& app,
     if (bad_dt) { pitch_step_ = {true, true, dt_s}; }
     if (config_.dm[0].installed && (pitch_step_.due || pitch_step_.invalid_time || bad_dt)) {
         pitch_step_.due = true;
+        pitch_computed_this_step_ = true;
+        pitch_last_timing_error_ = scheduled.invalid_time || bad_dt;
         pitch_last_encoded_feedforward_nm_ = std::nullopt;
         pitch_last_mit_attempt_at_.reset();
         pitch_last_mit_submitted_at_.reset();

@@ -11,6 +11,7 @@ class PlotViewRegression(unittest.TestCase):
         console = ui.Console.__new__(ui.Console)
         console.job = console.session = None
         console.param_ids = []
+        console.assist_fields = {}
         console.focus = 'pitch'
         console.domain_label = MagicMock(return_value='pitch')
         console.history = MagicMock()

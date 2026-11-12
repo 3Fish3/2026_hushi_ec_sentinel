@@ -17,6 +17,8 @@ struct PitchIdentificationPolicy {
     bool require_capture{false};
     // 实车部署显式开关: 只有配置持有者显式 opted-in 才参与执行器可用性判定. 默认关闭.
     bool deployment_opt_in{false};
+    // Independent position-mode opt-in. Zero keeps legacy torque-only builds unchanged.
+    float max_position_amplitude_rad{}, max_position_speed_rad_s{};
     [[nodiscard]] bool valid() const noexcept {
         return std::isfinite(min_rad) && std::isfinite(max_rad) && min_rad < max_rad &&
             std::isfinite(max_amplitude_nm) && max_amplitude_nm > 0 &&
@@ -25,13 +27,19 @@ struct PitchIdentificationPolicy {
             std::isfinite(max_tracking_error_rad) && max_tracking_error_rad > 0 &&
             min_half_period_us > 0 && max_duration_us > 0 && max_duration_us < 0x80000000u &&
             max_feedback_age_us > 0 && max_feedback_age_us < 0x80000000u &&
-            max_step_us > 0 && max_step_us < 0x80000000u;
+            max_step_us > 0 && max_step_us < 0x80000000u &&
+            ((max_position_amplitude_rad == 0 && max_position_speed_rad_s == 0) ||
+             (std::isfinite(max_position_amplitude_rad) && max_position_amplitude_rad > 0 &&
+              std::isfinite(max_position_speed_rad_s) && max_position_speed_rad_s > 0 &&
+              max_position_speed_rad_s <= max_velocity_rad_s));
     }
 };
 struct PitchIdentificationRecipe {
     std::uint32_t run_id{};
     float amplitude_nm{};
     std::uint32_t half_period_us{}, baseline_us{}, cycles{}, final_hold_us{};
+    float position_amplitude_rad{}, position_speed_rad_s{};
+    [[nodiscard]] bool position_mode() const noexcept { return position_amplitude_rad > 0; }
     [[nodiscard]] std::uint64_t duration_us() const noexcept {
         return baseline_us + 2ull*half_period_us*cycles + final_hold_us;
     }
@@ -46,25 +54,40 @@ struct PitchIdentificationEvidence {
     float target_rad{}, position_rad{}, velocity_rad_s{}, kp{}, kd{};
     float native_target_rad{}, native_position_rad{}, encoded_kp{}, encoded_kd{}, encoded_velocity{};
     drivers::DmMitLimits limits{};
+    float gravity_ff_nm{};
 };
 
 class PitchIdentification {
 public:
     [[nodiscard]] bool start(const PitchIdentificationPolicy& policy, PitchIdentificationRecipe recipe,
         const PitchIdentificationEvidence& evidence, MicroTick now) noexcept {
+        const bool position = recipe.position_mode();
         if (active() || latched() || !policy.valid() || !recipe.run_id || recipe.run_id <= last_run_id_ ||
-            !std::isfinite(recipe.amplitude_nm) || recipe.amplitude_nm <= 0 ||
-            recipe.amplitude_nm > policy.max_amplitude_nm || !recipe.cycles ||
+            !std::isfinite(recipe.amplitude_nm) || !std::isfinite(recipe.position_amplitude_rad) ||
+            !std::isfinite(recipe.position_speed_rad_s) ||
+            (position ? recipe.amplitude_nm != 0 : (recipe.amplitude_nm <= 0 ||
+                recipe.amplitude_nm > policy.max_amplitude_nm || recipe.position_amplitude_rad != 0 ||
+                recipe.position_speed_rad_s != 0)) || !recipe.cycles ||
             recipe.half_period_us < policy.min_half_period_us || recipe.half_period_us > policy.max_duration_us ||
             recipe.cycles > policy.max_duration_us / 2u / recipe.half_period_us ||
             recipe.baseline_us < policy.min_half_period_us || recipe.final_hold_us < policy.min_half_period_us ||
             recipe.duration_us() > policy.max_duration_us) { return false; }
+        if (position && (!std::isfinite(policy.max_position_amplitude_rad) ||
+            !std::isfinite(policy.max_position_speed_rad_s) || policy.max_position_amplitude_rad <= 0 ||
+            policy.max_position_speed_rad_s <= 0 || recipe.position_speed_rad_s <= 0 ||
+            recipe.position_amplitude_rad > policy.max_position_amplitude_rad ||
+            recipe.position_speed_rad_s > policy.max_position_speed_rad_s ||
+            evidence.target_rad - recipe.position_amplitude_rad <= policy.min_rad ||
+            evidence.target_rad + recipe.position_amplitude_rad >= policy.max_rad ||
+            2.0 * recipe.position_amplitude_rad / recipe.position_speed_rad_s * 1e6 > recipe.half_period_us ||
+            recipe.position_amplitude_rad / recipe.position_speed_rad_s * 1e6 > recipe.final_hold_us)) { return false; }
         // Failed startup must not disturb the existing holding target.
         if (check(evidence, policy) != PitchIdentificationFault::none) { return false; }
         policy_ = policy; recipe_ = recipe; binding_ = evidence;
         start_ = last_ = now; stepped_ = false; last_run_id_ = recipe.run_id;
         state_ = PitchIdentificationState::baseline; fault_ = PitchIdentificationFault::none;
-        requested_nm_ = encoded_nm_ = 0;
+        requested_nm_ = encoded_nm_ = position_offset_rad_ = 0;
+        position_completion_pending_ = false;
         return true;
     }
     [[nodiscard]] float tick(const PitchIdentificationEvidence& evidence, MicroTick now) noexcept {
@@ -74,7 +97,7 @@ public:
         if (evidence.grant != binding_.grant || evidence.config_epoch != binding_.config_epoch ||
             evidence.reference_epoch != binding_.reference_epoch || evidence.target_rad != binding_.target_rad ||
             evidence.kp != binding_.kp || evidence.kd != binding_.kd ||
-            evidence.native_target_rad != binding_.native_target_rad) {
+            evidence.native_target_rad != binding_.native_target_rad || evidence.gravity_ff_nm != binding_.gravity_ff_nm) {
             trip(PitchIdentificationFault::binding); return 0;
         }
         const auto gap = now.us-last_.us;
@@ -91,22 +114,55 @@ public:
             requested_nm_ = ((elapsed-recipe_.baseline_us)/recipe_.half_period_us)%2 == 0 ?
                 recipe_.amplitude_nm : -recipe_.amplitude_nm;
         } else { state_ = PitchIdentificationState::final_hold; }
+        if (recipe_.position_mode()) {
+            const float goal = state_ == PitchIdentificationState::square
+                ? (((elapsed-recipe_.baseline_us)/recipe_.half_period_us)%2 == 0
+                    ? recipe_.position_amplitude_rad : -recipe_.position_amplitude_rad) : 0;
+            // Position recipes carry no additive torque; waveform time is exclusively MCU time.
+            const float delta = goal - position_offset_rad_;
+            const float step = recipe_.position_speed_rad_s * static_cast<float>(gap) * 1e-6f;
+            position_offset_rad_ += std::fabs(delta) <= step ? delta : (delta > 0 ? step : -step);
+            requested_nm_ = 0;
+        }
         const auto raw = drivers::dm_encode_torque(evidence.limits, requested_nm_);
         const auto encoded = raw ? drivers::dm_decode_torque(evidence.limits, *raw) : std::nullopt;
         if (!encoded) { trip(PitchIdentificationFault::torque); return 0; }
         encoded_nm_ = *encoded;
-        const float expected = evidence.encoded_kp*(evidence.native_target_rad-evidence.native_position_rad) +
-            evidence.encoded_kd*(evidence.encoded_velocity-evidence.velocity_rad_s) + encoded_nm_;
+        const auto native_raw = drivers::dm_encode_position(evidence.limits, evidence.native_target_rad + position_offset_rad_);
+        const auto native = native_raw ? drivers::dm_decode_position(evidence.limits, *native_raw) : std::nullopt;
+        if (!native || evidence.target_rad + position_offset_rad_ <= policy_.min_rad ||
+            evidence.target_rad + position_offset_rad_ >= policy_.max_rad ||
+            std::fabs(*native - evidence.native_position_rad) > policy_.max_tracking_error_rad) {
+            trip(PitchIdentificationFault::envelope); return 0;
+        }
+        const auto total_raw = drivers::dm_encode_torque(evidence.limits, evidence.gravity_ff_nm + requested_nm_);
+        const auto total_ff = total_raw ? drivers::dm_decode_torque(evidence.limits, *total_raw) : std::nullopt;
+        if (!total_ff) { trip(PitchIdentificationFault::torque); return 0; }
+        const float expected = evidence.encoded_kp*(*native-evidence.native_position_rad) +
+            evidence.encoded_kd*(evidence.encoded_velocity-evidence.velocity_rad_s) + *total_ff;
         if (!std::isfinite(expected) || std::fabs(expected) > policy_.max_expected_torque_nm) {
             trip(PitchIdentificationFault::torque); return 0;
         }
-        if (elapsed >= recipe_.duration_us()) { state_ = PitchIdentificationState::complete; }
+        if (elapsed >= recipe_.duration_us()) {
+            if (position_offset_rad_ != 0) { trip(PitchIdentificationFault::timing); return 0; }
+            if (recipe_.position_mode()) { position_completion_pending_ = true; }
+            else { state_ = PitchIdentificationState::complete; }
+        }
         return requested_nm_;
     }
     void trip(PitchIdentificationFault fault) noexcept {
         if (state_ == PitchIdentificationState::idle || latched()) { return; }
         state_ = PitchIdentificationState::fault; fault_ = fault;
         requested_nm_ = encoded_nm_ = 0;
+    }
+    // Position completion requires actual submission of the final centre MIT frame.
+    void confirm_position_submission(bool accepted) noexcept {
+        if (!recipe_.position_mode() || !active()) { return; }
+        if (!accepted) { trip(PitchIdentificationFault::transmit); }
+        else if (position_completion_pending_) {
+            position_completion_pending_ = false;
+            state_ = PitchIdentificationState::complete;
+        }
     }
     // Caller must confirm both old target removal and fresh disabled feedback.
     [[nodiscard]] bool reset(bool no_target, bool disabled_confirmed) noexcept {
@@ -125,6 +181,7 @@ public:
     [[nodiscard]] std::uint32_t run_id() const noexcept { return recipe_.run_id; }
     [[nodiscard]] float requested_nm() const noexcept { return requested_nm_; }
     [[nodiscard]] float encoded_nm() const noexcept { return encoded_nm_; }
+    [[nodiscard]] float position_offset_rad() const noexcept { return active() ? position_offset_rad_ : 0; }
     [[nodiscard]] const PitchIdentificationPolicy& policy() const noexcept { return policy_; }
 private:
     [[nodiscard]] static PitchIdentificationFault check(const PitchIdentificationEvidence& e,
@@ -133,7 +190,7 @@ private:
         if (!e.feedback_valid || !e.enabled || e.feedback_age_us > p.max_feedback_age_us) { return PitchIdentificationFault::feedback; }
         if (!e.isolated) { return PitchIdentificationFault::isolation; }
         if (!std::isfinite(e.target_rad) || !std::isfinite(e.position_rad) || !std::isfinite(e.velocity_rad_s) ||
-            !std::isfinite(e.kp) || !std::isfinite(e.kd) || e.kp < 0 || e.kd < 0 ||
+            !std::isfinite(e.kp) || !std::isfinite(e.kd) || !std::isfinite(e.gravity_ff_nm) || e.kp < 0 || e.kd < 0 ||
             !std::isfinite(e.native_target_rad) || !std::isfinite(e.native_position_rad) ||
             !std::isfinite(e.encoded_kp) || !std::isfinite(e.encoded_kd) || !std::isfinite(e.encoded_velocity) ||
             e.target_rad <= p.min_rad || e.target_rad >= p.max_rad ||
@@ -147,9 +204,9 @@ private:
     PitchIdentificationEvidence binding_{};
     MicroTick start_{}, last_{};
     std::uint32_t last_run_id_{};
-    bool stepped_{};
+    bool stepped_{}, position_completion_pending_{};
     PitchIdentificationState state_{PitchIdentificationState::idle};
     PitchIdentificationFault fault_{PitchIdentificationFault::none};
-    float requested_nm_{}, encoded_nm_{};
+    float requested_nm_{}, encoded_nm_{}, position_offset_rad_{};
 };
 } // namespace ec::sentinel::app
