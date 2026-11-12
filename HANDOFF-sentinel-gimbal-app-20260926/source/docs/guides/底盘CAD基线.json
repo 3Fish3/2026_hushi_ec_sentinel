@@ -1,0 +1,122 @@
+{
+  "schema": "sentinel.chassis.cad-baseline/1",
+  "status": "geometry_and_id_plan_frozen_not_actuating_firmware",
+  "source": "references/hardware/SERS/底盘/底盘总装.SLDASM",
+  "source_sha256": "a24bed38e071c524c0720e9cdcf7d4fcaa659fdd09eb836feb13ac589e178401",
+  "configuration": "默认",
+  "vehicle_matches_CAD_user_confirmed": true,
+  "forward": "A edge between CAD wheels 3 and 5; CAD +Z",
+  "frame": {
+    "x": "CAD +Z / vehicle forward",
+    "y": "CAD +X / vehicle left",
+    "z": "CAD +Y / vehicle up",
+    "origin": "mean of four CAD wheel centers; not asserted to be the main-yaw axis",
+    "cad_to_body_rotation": [
+      [
+        0.0,
+        0.0,
+        1.0
+      ],
+      [
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0
+      ]
+    ],
+    "origin_cad_m": [
+      1.0861854504870374,
+      1.0406638428642836,
+      1.1537958701581665
+    ]
+  },
+  "radius_basis": "CAD roller geometric envelope used as initial rolling radius; loaded rolling scale can be calibrated during later tests",
+  "wheel_order": [
+    "LF",
+    "RF",
+    "LB",
+    "RB"
+  ],
+  "wheels": [
+    {
+      "position": "LF",
+      "domain": "chassis_lf",
+      "can_bus": 2,
+      "device_id": 1,
+      "feedback_id": "0x201",
+      "command_id": "0x200",
+      "cad_instance": "全向轮-3",
+      "x_m": 0.15254951016144003,
+      "y_m": 0.15302174147382486,
+      "cad_height_offset_m": 0.0004135383418761851,
+      "roll_dir_rad": -0.785398163397444,
+      "radius_m": 0.08197026951620383,
+      "native_direction": null
+    },
+    {
+      "position": "RF",
+      "domain": "chassis_rf",
+      "can_bus": 2,
+      "device_id": 2,
+      "feedback_id": "0x202",
+      "command_id": "0x200",
+      "cad_instance": "全向轮-5",
+      "x_m": 0.15310003329675537,
+      "y_m": -0.1523929265155891,
+      "cad_height_offset_m": -0.00013784611393963253,
+      "roll_dir_rad": 0.7853981633974506,
+      "radius_m": 0.08197026951620383,
+      "native_direction": null
+    },
+    {
+      "position": "LB",
+      "domain": "chassis_lb",
+      "can_bus": 2,
+      "device_id": 3,
+      "feedback_id": "0x203",
+      "command_id": "0x200",
+      "cad_instance": "全向轮-2",
+      "x_m": -0.15317832511968565,
+      "y_m": 0.1524712183385073,
+      "cad_height_offset_m": -0.00013784611397293922,
+      "roll_dir_rad": 0.785398163397447,
+      "radius_m": 0.08197026951620383,
+      "native_direction": null
+    },
+    {
+      "position": "RB",
+      "domain": "chassis_rb",
+      "can_bus": 2,
+      "device_id": 4,
+      "feedback_id": "0x204",
+      "command_id": "0x200",
+      "cad_instance": "全向轮-4",
+      "x_m": -0.1524712183385102,
+      "y_m": -0.15310003329674327,
+      "cad_height_offset_m": -0.0001378461139638354,
+      "roll_dir_rad": -0.7853981633974381,
+      "radius_m": 0.08197026951620383,
+      "native_direction": null
+    }
+  ],
+  "other_CAN2_slots": {
+    "friction_left": 5,
+    "friction_right": 6,
+    "trigger": 7
+  },
+  "transmission": {
+    "rotor_per_axis": 19.0,
+    "cad_reference_name": "M3508减速箱 减比268：17.step",
+    "unverified_name_ratio": 15.764705882352942,
+    "status": "user-confirmed 19:1 on 2026-09-26; supersedes CAD reference-name clue"
+  },
+  "commissioning": {
+    "native_direction": "check during first powered single-wheel tests, no prerequisite hand-turn identification",
+    "control_defaults": "prepare from an explicitly identified current tested baseline; no arbitrary gains claimed as measured",
+    "actuating_image_ready": false
+  }
+}

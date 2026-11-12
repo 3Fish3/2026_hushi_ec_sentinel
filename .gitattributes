@@ -1,0 +1,68 @@
+# ==============================================================================
+# Sentinel 行尾与二进制属性 (Line endings & binary attributes)
+# ------------------------------------------------------------------------------
+# 背景: 本仓库历史上没有 .gitattributes, 同一批文件在索引里既有 LF 也有 CRLF
+#       (1531 个已跟踪文本文件中 575 个以 CRLF 存入索引)。导致同一个文件在不同
+#       机器上 diff 全红、blame 失真。
+#
+# 注意: 本文件只改变"下次 add 时的归一化规则", 不会重写任何已提交的 blob。
+#       要让历史 CRLF 文件真正统一, 需要显式执行 `git add --renormalize <path>`,
+#       那是单独的、可审查的暂存动作, 不由此文件自动触发。
+# ==============================================================================
+
+# 所有文件默认按文本处理: 提交进库统一为 LF, 检出时按平台决定。
+* text=auto
+
+# 明确声明为文本并固定 LF —— C/C++ 与 Python 工具链在 LF 下不会出现预处理行拼问题,
+# 且这些文件同时在 Linux 主机和 ARM 交叉编译两条链上使用。
+*.c       text eol=lf
+*.h       text eol=lf
+*.cpp     text eol=lf
+*.hpp     text eol=lf
+*.cc      text eol=lf
+*.hh      text eol=lf
+*.s       text eol=lf
+*.ld      text eol=lf
+*.py      text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.json    text eol=lf
+*.csv     text eol=lf
+*.cmake   text eol=lf
+*.ioc     text eol=lf
+*.html    text eol=lf
+*.sh      text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# Windows 运行脚本必须保留 CRLF, 否则 cmd/PowerShell 的续行与批处理解析会出错。
+*.cmd     text eol=crlf
+*.bat     text eol=crlf
+*.ps1     text eol=crlf
+
+# 二进制: 禁止任何行尾转换与文本 diff, 避免 git 试图"修复"它们。
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.zip     binary
+*.7z      binary
+*.tar     binary
+*.gz      binary
+*.bin     binary
+*.elf     binary
+*.hex     binary
+*.map     binary
+*.axf     binary
+*.o       binary
+*.a       binary
+*.so      binary
+*.sraw    binary
+*.wire    binary
+*.mp4     binary
+*.avi     binary
+*.docx    binary
+*.xlsx    binary
+*.pptx    binary
