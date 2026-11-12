@@ -107,3 +107,55 @@ settings/
 **/boards/sentinel_f407/cubemx/sentinel_s1/CMakeLists.txt
 **/boards/sentinel_f407/cubemx/sentinel_s1/CMakePresets.json
 **/boards/sentinel_f407/cubemx/sentinel_s1/cmake/
+
+# 8. 快照与外部仓库 (Snapshots & external repos)
+# ------------------------------------------------------------------------------
+/sentinel-src-*/
+/视觉/
+/archives/
+
+# 9. 工具缓存与遗漏构建目录 (Tool cache & missed build dirs)
+# ------------------------------------------------------------------------------
+/.playwright-mcp/
+**/build-host-guardian/
+
+# 10. 交接包运行产物 (Handoff runtime outputs)
+# ------------------------------------------------------------------------------
+# 2026-11-12 修订: 原规则 HANDOFF-*/results/ 与 HANDOFF-*/deliverables/ 按整个目录排除,
+# 而 git 对已排除目录内部的 ! 取反无效, 导致 results/ 下 37 份结论文档与全部小 json
+# (FINAL.md、各 REPORT.md、analysis/trial/summary.json) 物理上无法入库。
+# 现改为按扩展名排除原始采集, 放行 .md/.json/.txt/.sha256 等结论载体。
+HANDOFF-*/results/**/*.csv
+HANDOFF-*/results/**/*.jsonl
+HANDOFF-*/results/**/*.mp4
+HANDOFF-*/results/**/*.sraw
+HANDOFF-*/results/**/*.wire
+HANDOFF-*/results/**/*.jpg
+HANDOFF-*/results/media/
+# deliverables/ 是被阻塞的交付快照, 其中 source/ 的 398 个文件有 307~343 个与
+# 同包 source/ 逐字节重复, 因此只保留各快照的 README.md 说明。
+HANDOFF-*/deliverables/**/source/
+HANDOFF-*/deliverables/**/firmware/
+HANDOFF-*/deliverables/**/native*/
+HANDOFF-*/deliverables/**/native-linux/
+HANDOFF-*/deliverables/**/logs/
+HANDOFF-*/deliverables/**/demos/
+HANDOFF-*/deliverables/**/verification/
+# 第 10 个交接包位于 test/ 下, 上面的 HANDOFF-* 前缀规则不会匹配它。
+test/HANDOFF-*/records/
+test/HANDOFF-*/build/
+
+# 11. 大体积参考资料 (Large references)
+# ------------------------------------------------------------------------------
+docs/robomaster_official_rules/**/*.pdf
+/参数/*.jpg
+
+# 12. 临时备份 (Temp backups)
+# ------------------------------------------------------------------------------
+*.bak-*
+*.orig
+
+# 13. 交接包证据日志保留 (Keep handoff evidence logs)
+# ------------------------------------------------------------------------------
+!HANDOFF-*/evidence/**/*.log
+!HANDOFF-*/**/evidence/**/*.log
